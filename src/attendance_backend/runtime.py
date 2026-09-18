@@ -94,7 +94,10 @@ class RuntimeService:
         except TokenError as error:
             raise PermissionError("OIDC login required") from error
         roles = principal.roles.intersection({"operator", "reviewer", "admin"})
-        if principal.principal_type != "user" or "dashboard:read" not in principal.scopes or not roles:
+        # Keycloak carries authorisation in realm_access.roles; scopes stay
+        # supported so pre-existing scope-based tokens keep working.
+        granted = principal.scopes | principal.roles
+        if principal.principal_type != "user" or "dashboard:read" not in granted or not roles:
             raise PermissionError("dashboard role required")
         return self.dashboard(actor=principal.subject, roles=roles)
 

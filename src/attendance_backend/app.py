@@ -232,6 +232,7 @@ class App:
             scopes: frozenset
             event_types: frozenset
             sites: frozenset
+            roles: frozenset = frozenset()
 
         return LegacyPrincipal(
             principal_type=principal.get("principal_type"),
@@ -240,12 +241,13 @@ class App:
             scopes=frozenset(principal.get("scopes", [])),
             event_types=frozenset(principal.get("event_types", [])),
             sites=frozenset(principal.get("sites", [])),
+            roles=frozenset(principal.get("roles", [])),
         )
 
     def _require_base_authorization(self, principal, principal_type, scope):
         if principal.principal_type != principal_type:
             raise RequestError(403, "principal_event_denied", "Principal type denied")
-        if scope not in principal.scopes:
+        if scope not in principal.scopes and scope not in principal.roles:
             raise RequestError(403, "scope_denied", "Scope denied")
         if principal_type == "user" and not principal.subject:
             raise RequestError(401, "token_invalid", "Human subject required")

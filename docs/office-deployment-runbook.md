@@ -191,7 +191,7 @@ Buka `https://<hostname>/dashboard`; redirect harus menuju login Keycloak. Uji t
 
 Backup target `/var/backups/absensi/` wajib pada storage terenkripsi, permission owner-only. Backup memakai SQLite online backup, sealing WAL, manifest HMAC, dan verifikasi fail-closed. Restore memerlukan operator dan approver berbeda serta alasan. Lakukan restore drill ke path terpisah sebelum memakai hasil; jangan overwrite DB aktif.
 
-Raw retention default 30 hari; processed 90 hari. Dedupe 10 detik, rate limit 100 request/menit/client, clock skew 30 detik, grace check-in 15 menit. Semua bisa dioverride melalui `deployment.env`; nilai kosong, noninteger, nol, atau raw > processed membuat startup gagal.
+Raw retention default 30 hari; processed 90 hari. Dedupe 10 detik, rate limit 100 request/menit/client, clock skew 30 detik, grace check-in 15 menit. Semua bisa dioverride melalui `deployment.env`; nilai kosong, noninteger, nol, atau raw > processed membuat startup gagal. Batas atas keamanan: grace maksimum 720 menit (12 jam).
 
 ## Monitoring dan incident
 

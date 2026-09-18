@@ -1,0 +1,223 @@
+name: absensi-cctv
+
+services:
+  proxy:
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    read_only: true
+    restart: unless-stopped
+    ports:
+      - "${ABSENSI_BIND_ADDRESS:-127.0.0.1}:443:443"
+    environment:
+      ABSENSI_HOSTNAME: ${ABSENSI_HOSTNAME:?internal hostname required}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${ABSENSI_TLS_CERT:?TLS certificate required}:/run/tls/tls.crt:ro
+      - ${ABSENSI_TLS_KEY:?TLS private key required}:/run/tls/tls.key:ro
+    tmpfs:
+      - /config
+      - /data
+    networks:
+      edge:
+      app_net:
+      identity_net:
+        aliases: ["${ABSENSI_HOSTNAME:?required}"]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    mem_limit: 128m
+    cpus: 0.25
+    healthcheck:
+      test: [CMD, wget, --no-check-certificate, -qO-, https://127.0.0.1/health/live]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.12.0@sha256:786bed0f000c0f8a7b31619244ebab02406a8856a4faf3f5fb1df61fbd6c30ed
+    read_only: true
+    restart: unless-stopped
+    command:
+      - --provider=keycloak-oidc
+      - --oidc-issuer-url=${ABSENSI_OIDC_ISSUER:?required}
+      - --client-id=absensi-dashboard
+      - --client-secret-file=/run/secrets/oidc_client_secret
+      - --cookie-secret-file=/run/secrets/oauth_cookie_secret
+      - --cookie-secure=true
+      - --cookie-samesite=lax
+      - --code-challenge-method=S256
+      - --email-domain=*
+      - --scope=openid profile email
+      - --pass-access-token=true
+      - --pass-authorization-header=true
+      - --set-authorization-header=true
+      - --upstream=http://app:8080
+      - --http-address=0.0.0.0:4180
+      - --reverse-proxy=true
+      - --redirect-url=https://${ABSENSI_HOSTNAME:?required}/oauth2/callback
+    environment:
+      SSL_CERT_FILE: /run/tls/ca.crt
+    volumes:
+      - ${ABSENSI_INTERNAL_CA:?internal CA required}:/run/tls/ca.crt:ro
+    secrets: [oidc_client_secret, oauth_cookie_secret]
+    tmpfs: [/tmp]
+    networks: [app_net, identity_net]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 128m
+    cpus: 0.25
+    depends_on:
+      keycloak:
+        condition: service_healthy
+
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    read_only: true
+    restart: unless-stopped
+    environment:
+      ABSENSI_HOSTNAME: ${ABSENSI_HOSTNAME:?required}
+      ABSENSI_DATABASE_PATH: /var/lib/absensi/attendance.sqlite3
+      ABSENSI_BACKUP_PATH: /var/backups/absensi
+      ABSENSI_ENCRYPTION_ATTESTATION: /run/absensi/at-rest.json
+      ABSENSI_OIDC_ISSUER: ${ABSENSI_OIDC_ISSUER:?required}
+      ABSENSI_OIDC_AUDIENCE: ${ABSENSI_OIDC_AUDIENCE:?required}
+      ABSENSI_JWKS_URI: ${ABSENSI_JWKS_URI:?required}
+      ABSENSI_RTSP_SECRET_PATH: ${ABSENSI_RTSP_SECRET_PATH:-secret/data/absensi/rtsp}
+      ABSENSI_MANIFEST_KEY_PATH: ${ABSENSI_MANIFEST_KEY_PATH:-secret/data/absensi/backup}
+      ABSENSI_DEDUPE_WINDOW_SECONDS: ${ABSENSI_DEDUPE_WINDOW_SECONDS:-10}
+      ABSENSI_RAW_RETENTION_DAYS: ${ABSENSI_RAW_RETENTION_DAYS:-30}
+      ABSENSI_PROCESSED_RETENTION_DAYS: ${ABSENSI_PROCESSED_RETENTION_DAYS:-90}
+      ABSENSI_RATE_LIMIT_PER_MINUTE: ${ABSENSI_RATE_LIMIT_PER_MINUTE:-100}
+      ABSENSI_CLOCK_SKEW_SECONDS: ${ABSENSI_CLOCK_SKEW_SECONDS:-30}
+      ABSENSI_GRACE_PERIOD_MINUTES: ${ABSENSI_GRACE_PERIOD_MINUTES:-15}
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /run/tls/ca.crt
+    volumes:
+      - ${ABSENSI_DATA_DIR:-/var/lib/absensi}:/var/lib/absensi
+      - ${ABSENSI_BACKUP_DIR:-/var/backups/absensi}:/var/backups/absensi
+      - ${ABSENSI_ATTESTATION_FILE:?at-rest attestation required}:/run/absensi/at-rest.json:ro
+      - ${ABSENSI_INTERNAL_CA:?internal CA required}:/run/tls/ca.crt:ro
+    secrets: [vault_app_token]
+    tmpfs: [/tmp]
+    networks: [app_net, secrets_net, identity_net]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    cpus: 1.0
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3.3@sha256:6a7217a100bd3e5de4063a27a538ef999a3c5a88c4b4ec0ffc0a642aee7b2597
+    read_only: true
+    restart: unless-stopped
+    entrypoint: [/bin/bash, /opt/absensi/keycloak-entrypoint.sh]
+    environment:
+      KC_HOSTNAME: https://${ABSENSI_HOSTNAME:?required}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+    volumes:
+      - ./keycloak-entrypoint.sh:/opt/absensi/keycloak-entrypoint.sh:ro
+    secrets: [keycloak_db_user, keycloak_db_password, keycloak_admin_user, keycloak_admin_password]
+    tmpfs: [/tmp]
+    networks: [identity_net, keycloak_db_net]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 1536m
+    cpus: 1.5
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD-SHELL, "exec 3<>/dev/tcp/127.0.0.1/9000; echo -e 'GET /health/ready HTTP/1.1\r\nhost: localhost\r\nConnection: close\r\n\r\n' >&3; grep -q '200 OK' <&3"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+
+  keycloak-db:
+    image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+    read_only: true
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER_FILE: /run/secrets/keycloak_db_user
+      POSTGRES_PASSWORD_FILE: /run/secrets/keycloak_db_password
+    secrets: [keycloak_db_user, keycloak_db_password]
+    volumes: [keycloak-data:/var/lib/postgresql/data]
+    tmpfs: [/tmp, /run/postgresql]
+    networks: [keycloak_db_net]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    mem_limit: 1024m
+    cpus: 1.0
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -d keycloak -U $$(cat /run/secrets/keycloak_db_user)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  vault:
+    image: hashicorp/vault:1.20.3@sha256:1262354cd28697b7982ea3b9b6f159a996bdaad0b5270765e31b67797ce15bea
+    read_only: true
+    restart: unless-stopped
+    command: [server, -config=/vault/config/vault.hcl]
+    volumes:
+      - ./vault.hcl:/vault/config/vault.hcl:ro
+      - vault-data:/vault/file
+      - ${VAULT_TLS_CERT:?Vault TLS certificate required}:/run/tls/tls.crt:ro
+      - ${VAULT_TLS_KEY:?Vault TLS private key required}:/run/tls/tls.key:ro
+      - ${ABSENSI_INTERNAL_CA:?required}:/run/tls/ca.crt:ro
+    tmpfs: [/tmp]
+    networks: [secrets_net]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 1024m
+    cpus: 1.0
+    healthcheck:
+      test: [CMD, vault, status, -address=https://127.0.0.1:8200, -ca-cert=/run/tls/ca.crt]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+
+networks:
+  edge:
+  app_net:
+    internal: true
+  identity_net:
+    internal: true
+  secrets_net:
+    internal: true
+  keycloak_db_net:
+    internal: true
+
+volumes:
+  app-data:
+  backup-data:
+  keycloak-data:
+  vault-data:
+
+secrets:
+  keycloak_db_user:
+    file: ${KEYCLOAK_DB_USER_FILE:?required}
+  keycloak_db_password:
+    file: ${KEYCLOAK_DB_PASSWORD_FILE:?required}
+  keycloak_admin_user:
+    file: ${KEYCLOAK_ADMIN_USER_FILE:?required}
+  keycloak_admin_password:
+    file: ${KEYCLOAK_ADMIN_PASSWORD_FILE:?required}
+  vault_app_token:
+    file: ${VAULT_APP_TOKEN_FILE:?required}
+  oidc_client_secret:
+    file: ${OIDC_CLIENT_SECRET_FILE:?required}
+  oauth_cookie_secret:
+    file: ${OAUTH_COOKIE_SECRET_FILE:?required}

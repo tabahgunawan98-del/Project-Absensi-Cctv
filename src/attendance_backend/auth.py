@@ -62,6 +62,7 @@ class Principal:
     scopes: frozenset = field(default_factory=frozenset)
     event_types: frozenset = field(default_factory=frozenset)
     sites: frozenset = field(default_factory=frozenset)
+    roles: frozenset = field(default_factory=frozenset)
 
 
 def _decode(segment):
@@ -163,15 +164,19 @@ def verify_token(token, config, now=None):
     if not_before is not None and now + config.clock_skew_seconds < not_before:
         raise TokenError("token_invalid", "Token is not valid yet")
 
-    grant_type = claims.get("grant_type")
-    principal_type = GRANT_PRINCIPAL_TYPES.get(grant_type) if isinstance(grant_type, str) else None
+    principal_type = claims.get("absensi.principal_type")
+    if principal_type not in {"machine", "user"}:
+        grant_type = claims.get("grant_type")
+        principal_type = GRANT_PRINCIPAL_TYPES.get(grant_type) if isinstance(grant_type, str) else None
     if principal_type is None:
-        raise TokenError("token_invalid", "Token grant type is not supported")
+        raise TokenError("token_invalid", "Token principal type is not supported")
     subject = claims.get("sub") if isinstance(claims.get("sub"), str) else None
     if principal_type == "user" and not subject:
         raise TokenError("token_invalid", "User-delegated token needs a human subject")
 
     client_id = claims.get("client_id") if isinstance(claims.get("client_id"), str) else None
+    realm_access = claims.get("realm_access")
+    roles = _string_set(realm_access.get("roles")) if isinstance(realm_access, dict) else frozenset()
     return Principal(
         principal_type=principal_type,
         subject=subject,
@@ -179,4 +184,5 @@ def verify_token(token, config, now=None):
         scopes=_string_set(claims.get(config.scope_claim)),
         event_types=_string_set(claims.get(config.event_types_claim)),
         sites=_string_set(claims.get(config.sites_claim)),
+        roles=roles,
     )

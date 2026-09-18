@@ -1,0 +1,39 @@
+{
+	auto_https off
+	admin off
+}
+
+https://{$ABSENSI_HOSTNAME} {
+	tls /run/tls/tls.crt /run/tls/tls.key
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		Content-Security-Policy "default-src 'self'; frame-ancestors 'none'; form-action 'self'"
+	}
+
+	@keycloak path /realms/* /resources/* /admin/*
+	handle @keycloak {
+		reverse_proxy keycloak:8080 {
+			header_up X-Forwarded-Proto https
+			header_up X-Forwarded-Host {$ABSENSI_HOSTNAME}
+		}
+	}
+
+	handle /oauth2/* {
+		reverse_proxy oauth2-proxy:4180
+	}
+
+	handle /dashboard* {
+		reverse_proxy oauth2-proxy:4180
+	}
+
+	handle {
+		reverse_proxy app:8080 {
+			header_up X-Forwarded-Proto https
+			header_up X-Forwarded-Host {$ABSENSI_HOSTNAME}
+		}
+	}
+}

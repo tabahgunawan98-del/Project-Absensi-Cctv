@@ -8,7 +8,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from attendance_backend.auth import AuthConfig
+from attendance_backend.auth import AuthConfig, TokenError, verify_token
 from attendance_backend.jwks import JwksCache, jwk_from_public_key, sign_jwt
 from attendance_backend.recovery import BackupService, RestoreAuthorization
 from attendance_backend.runtime import RuntimeService
@@ -338,6 +338,65 @@ class RuntimeHttpAppTest(unittest.TestCase):
 
 
 class SyntheticEndToEndSmokeTest(unittest.TestCase):
+    def test_verify_token_handles_nested_absensi_claims_with_strict_typing(self):
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        jwks = {"keys": [jwk_from_public_key(private_key.public_key(), kid="smoke-key")]}
+        auth = AuthConfig(
+            issuer="https://absensi.office.local/realms/absensi",
+            audience="absensi-api",
+            keys={},
+            algorithms=frozenset({"RS256"}),
+            key_resolver=JwksCache(lambda: jwks, ttl_seconds=300, clock=lambda: 1_000),
+        )
+
+        # Case 1: Nested claims (preferred Keycloak 26 output)
+        nested_claims = {
+            "iss": auth.issuer,
+            "aud": auth.audience,
+            "exp": 2_000,
+            "sub": "user-1",
+            "absensi": {
+                "principal_type": "user",
+                "event_types": ["observation.detected.v2"],
+                "sites": ["site-1"],
+            },
+            "realm_access": {"roles": ["operator"]},
+        }
+        token = sign_jwt(nested_claims, private_key, kid="smoke-key", alg="RS256")
+        principal = verify_token(token, auth, now=1_000)
+        self.assertEqual(principal.principal_type, "user")
+        self.assertIn("observation.detected.v2", principal.event_types)
+        self.assertIn("site-1", principal.sites)
+
+        # Case 2: Legacy flat dotted claims
+        flat_claims = {
+            "iss": auth.issuer,
+            "aud": auth.audience,
+            "exp": 2_000,
+            "sub": "user-1",
+            "absensi.principal_type": "user",
+            "absensi.event_types": ["observation.detected.v2"],
+            "absensi.sites": ["site-1"],
+            "realm_access": {"roles": ["operator"]},
+        }
+        token = sign_jwt(flat_claims, private_key, kid="smoke-key", alg="RS256")
+        principal = verify_token(token, auth, now=1_000)
+        self.assertEqual(principal.principal_type, "user")
+
+        # Case 3: Conflicting claims
+        conflict = nested_claims.copy()
+        conflict["absensi.principal_type"] = "machine"
+        token = sign_jwt(conflict, private_key, kid="smoke-key", alg="RS256")
+        with self.assertRaisesRegex(TokenError, "Conflicting values"):
+            verify_token(token, auth, now=1_000)
+
+        # Case 4: Strict typing violation (machine expects string, sites expect list)
+        bad_type = nested_claims.copy()
+        bad_type["absensi"] = {"principal_type": ["not-a-string"]}
+        token = sign_jwt(bad_type, private_key, kid="smoke-key", alg="RS256")
+        with self.assertRaisesRegex(TokenError, "must be str"):
+            verify_token(token, auth, now=1_000)
+
     def test_oidc_ingest_attendance_dashboard_backup_restore(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

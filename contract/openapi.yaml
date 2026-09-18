@@ -1,0 +1,490 @@
+openapi: 3.1.0
+info:
+  title: Absensi CCTV Ingress API
+  version: 2.0.0-draft
+  description: >-
+    Draft contract only. Breaking successor to 1.0; the 1.0 wire contract is not
+    accepted on these endpoints. Schema-valid never implies authorized or
+    semantically admissible: runtime must enforce token claims, site scope,
+    event-type allowlists, actor provenance, and the portable invariants in README.
+  license:
+    name: Terms pending owner approval.
+    url: https://terms.invalid/pending
+servers:
+  - url: https://api.invalid
+    description: Placeholder; not deployable.
+paths:
+  /v2/events:
+    post:
+      operationId: ingestMachineEventAlias
+      summary: Alias for /v2/machine-events
+      description: >-
+        Convenience alias; behavior identical to /v2/machine-events.
+      security:
+        - machineOAuth:
+            - events:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: './event.schema.json#/$defs/ObservationEvent'
+                - $ref: './event.schema.json#/$defs/IdentityResolutionEvent'
+      responses:
+        '200':
+          description: Exact replay; prior stable result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
+        '202':
+          description: Newly accepted for processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '429':
+          $ref: '#/components/responses/Throttled'
+  /v2/machine-events:
+    post:
+      operationId: ingestMachineEvent
+      summary: Ingest one observation or identity-resolution event
+      security:
+        - machineOAuth:
+            - events:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: './event.schema.json#/$defs/ObservationEvent'
+                - $ref: './event.schema.json#/$defs/IdentityResolutionEvent'
+      responses:
+        '200':
+          description: Exact replay; prior stable result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
+        '202':
+          description: Newly accepted for processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '429':
+          $ref: '#/components/responses/Throttled'
+  /v2/events/batch:
+    post:
+      operationId: ingestMachineEventBatchAlias
+      summary: Alias for /v2/machine-event-batches
+      description: >-
+        Convenience alias; behavior identical to /v2/machine-event-batches.
+      security:
+        - machineOAuth:
+            - events:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [batch_id, items]
+              properties:
+                batch_id:
+                  type: string
+                  format: uuid
+                items:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+              additionalProperties: false
+      responses:
+        '200':
+          description: >-
+            One result per input item, in request order. Each item commits independently;
+            a rejected item never rolls back accepted siblings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '429':
+          $ref: '#/components/responses/Throttled'
+  /v2/machine-event-batches:
+    post:
+      operationId: ingestMachineEventBatch
+      summary: Ingest offline machine events with partial per-item outcomes
+      description: >-
+        Partial-batch semantics are normative. The request schema constrains only the
+        batch envelope and requires each item to be a JSON object; it deliberately does
+        NOT apply the event schema at the request boundary, so one malformed item cannot
+        invalidate the whole body. The application validates every item against the event
+        schema and portable invariants and returns exactly one result per input item, in
+        request order. Authentication, authorization, and size limits are evaluated before
+        any item is processed.
+      security:
+        - machineOAuth:
+            - events:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [batch_id, items]
+              properties:
+                batch_id:
+                  type: string
+                  format: uuid
+                items:
+                  type: array
+                  minItems: 1
+                  description: >-
+                    Opaque JSON objects validated per item by the application. The active
+                    count/byte limit is enforced at runtime and advertised to clients; no
+                    capacity number is approved by this draft.
+                  items:
+                    type: object
+              additionalProperties: false
+      responses:
+        '200':
+          description: >-
+            One result per input item, in request order. Each item commits independently;
+            a rejected item never rolls back accepted siblings. Retrying unchanged items
+            converges to duplicate with the same stored hash.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '429':
+          $ref: '#/components/responses/Throttled'
+  /v2/manual-attendance-events:
+    post:
+      operationId: createManualAttendanceEvent
+      summary: Record user-delegated manual attendance
+      description: >-
+        Client-credentials tokens are rejected. Runtime must require a human subject,
+        authorized role and site, and the owner-defined authentication context/step-up
+        policy. Actor identity comes only from verified token claims, never from the body.
+      security:
+        - userOAuth:
+            - attendance:manual
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './event.schema.json#/$defs/ManualAttendanceEvent'
+      responses:
+        '200':
+          description: Exact replay; prior stable result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
+        '202':
+          description: Newly accepted for processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '429':
+          $ref: '#/components/responses/Throttled'
+  /health/live:
+    get:
+      operationId: liveness
+      summary: Process/event-loop liveness only
+      security: []
+      responses:
+        '200':
+          description: Process responds; no dependency or contract guarantee.
+        '403':
+          description: Probe caller is outside the infrastructure allowlist.
+  /health/ready:
+    get:
+      operationId: readiness
+      summary: Ingest readiness
+      security: []
+      responses:
+        '200':
+          description: Contract loaded, database writable, recovery complete, deletion ledger applied, queue below configured high-water mark.
+        '403':
+          description: Probe caller is outside the infrastructure allowlist.
+        '503':
+          description: Ingest must not receive traffic; response exposes no dependency details.
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Must equal body event_id; mismatch is idempotency_mismatch.
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    Canonicalization:
+      const: jcs-rfc8785-v1
+    Sha256Hex:
+      type: string
+      pattern: '^[a-f0-9]{64}$'
+    IngestResult:
+      type: object
+      required: [event_id, outcome, payload_sha256, canonicalization]
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        outcome:
+          enum: [accepted, duplicate]
+        payload_sha256:
+          $ref: '#/components/schemas/Sha256Hex'
+        canonicalization:
+          $ref: '#/components/schemas/Canonicalization'
+      additionalProperties: false
+    BatchResponse:
+      type: object
+      required: [batch_id, results]
+      properties:
+        batch_id:
+          type: string
+          format: uuid
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/BatchItemResult'
+      additionalProperties: false
+    BatchItemResult:
+      description: >-
+        Outcome, hash, and error are mutually constrained. accepted/duplicate carry a hash
+        and no error; rejected carries an error and no hash. event_id is null only when the
+        item has no parseable UUID event_id.
+      oneOf:
+        - $ref: '#/components/schemas/BatchItemStored'
+        - $ref: '#/components/schemas/BatchItemRejected'
+    BatchItemStored:
+      type: object
+      required: [index, event_id, outcome, payload_sha256, canonicalization]
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        event_id:
+          type: string
+          format: uuid
+        outcome:
+          enum: [accepted, duplicate]
+        payload_sha256:
+          $ref: '#/components/schemas/Sha256Hex'
+        canonicalization:
+          $ref: '#/components/schemas/Canonicalization'
+      additionalProperties: false
+    BatchItemRejected:
+      type: object
+      required: [index, event_id, outcome, error]
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        event_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: 'null'
+        outcome:
+          const: rejected
+        error:
+          $ref: '#/components/schemas/Problem'
+      additionalProperties: false
+    ErrorCode:
+      enum:
+        - schema_invalid
+        - invariant_violated
+        - malformed_json
+        - idempotency_mismatch
+        - event_id_conflict
+        - authentication_required
+        - token_invalid
+        - scope_denied
+        - principal_event_denied
+        - site_denied
+        - rate_limited
+        - queue_full
+        - request_too_large
+        - resource_not_found
+    Problem:
+      type: object
+      required: [type, title, status, code, request_id]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        request_id:
+          type: string
+          format: uuid
+        event_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: 'null'
+        retryable:
+          type: boolean
+      additionalProperties: false
+    ThrottledProblem:
+      description: 429 body; retry_after_seconds is required and matches the Retry-After header.
+      type: object
+      required: [type, title, status, code, request_id, retry_after_seconds]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          const: 429
+        code:
+          enum: [rate_limited, queue_full]
+        request_id:
+          type: string
+          format: uuid
+        event_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: 'null'
+        retryable:
+          const: true
+        retry_after_seconds:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+  responses:
+    BadRequest:
+      description: 'malformed_json, schema_invalid, invariant_violated, or idempotency_mismatch; not retryable unchanged.'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: 'authentication_required or token_invalid; rejected before storage.'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: 'scope_denied, principal_event_denied, or site_denied; rejected before storage.'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Conflict:
+      description: 'event_id_conflict; stored event remains immutable.'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    TooLarge:
+      description: 'request_too_large; no batch item is processed.'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Throttled:
+      description: 'rate_limited (producer rate control) or queue_full (ingest backpressure).'
+      headers:
+        Retry-After:
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ThrottledProblem'
+  securitySchemes:
+    machineOAuth:
+      type: oauth2
+      description: >-
+        Client credentials. Runtime validates algorithm allowlist, signature, iss, aud,
+        exp, nbf with declared clock policy, revocation where supported, required scope,
+        principal event allowlist, and site/camera claims. Body source metadata is
+        descriptive and never establishes authorization.
+      flows:
+        clientCredentials:
+          tokenUrl: https://identity.invalid/oauth2/token
+          scopes:
+            events:write: Submit allowed machine event types to allowed sites.
+    userOAuth:
+      type: oauth2
+      description: >-
+        Authorization-code user delegation. Runtime requires a human subject and approved
+        authentication context; client-credentials tokens are rejected.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://identity.invalid/oauth2/authorize
+          tokenUrl: https://identity.invalid/oauth2/token
+          scopes:
+            attendance:manual: Create manual attendance within actor site scope.

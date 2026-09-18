@@ -4,7 +4,9 @@ set -euo pipefail
 read_secret() {
   local path="$1"
   [[ -f "$path" ]] || { printf 'required secret file missing\n' >&2; exit 1; }
-  IFS= read -r REPLY < "$path"
+  # `read` returns non-zero when the file has no trailing newline, which is the
+  # normal shape of a docker secret; accept the value it already stored.
+  IFS= read -r REPLY < "$path" || true
   [[ -n "$REPLY" ]] || { printf 'required secret file empty\n' >&2; exit 1; }
 }
 
@@ -19,7 +21,7 @@ export KC_BOOTSTRAP_ADMIN_PASSWORD="$REPLY"
 unset REPLY
 
 exec /opt/keycloak/bin/kc.sh start \
+  --optimized \
   --http-enabled=true \
   --hostname-strict=true \
-  --proxy-headers=xforwarded \
-  --health-enabled=true
+  --proxy-headers=xforwarded

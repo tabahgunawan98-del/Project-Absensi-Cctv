@@ -3,6 +3,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 COPY contract ./contract
+ENV ABSENSI_CONTRACT_DIR=/app/contract
 RUN pip install --no-cache-dir .
 USER 65532:65532
 EXPOSE 8080

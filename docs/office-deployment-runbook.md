@@ -38,6 +38,45 @@ sudo cp deploy/.env.example /etc/absensi/deployment.env
 sudo chmod 0600 /etc/absensi/deployment.env
 ```
 
+### UID/GID per service dan ownership file
+
+Docker secret file diberikan ke container apa adanya; tanpa ownership yang cocok, service gagal start dengan `Permission denied`. Nilai UID/GID di bawah harus sama persis dengan `user:` pada `deploy/compose.yaml`.
+
+| Service | `user:` | File yang harus dimiliki |
+|---|---|---|
+| `app` | `65532:65532` | `/etc/absensi/secrets/vault-app-token`, `/etc/absensi/at-rest.json`, `/var/lib/absensi`, `/var/backups/absensi` |
+| `keycloak` | `1000:0` | `keycloak-db-user`, `keycloak-db-password`, `keycloak-admin-user`, `keycloak-admin-password` |
+| `keycloak-db` | `70:70` | `keycloak-db-user`, `keycloak-db-password` |
+| `oauth2-proxy` | `65532:4000` | `oidc-client-secret` (grup `4000`), `oauth-cookie-secret` |
+| `keycloak-bootstrap` | `1000:4000` | `keycloak-admin-user`, `keycloak-admin-password`, `oidc-client-secret` |
+| `vault` | `100:1000` | volume `vault-data`, TLS key Vault |
+| `proxy` | `1000:1000` | TLS key proxy |
+
+Secret DB dibaca dua service dengan UID berbeda, jadi berikan group bersama dan mode `0640`:
+
+```bash
+sudo groupadd -f -g 4000 absensi-secrets
+sudo chown 65532:65532 /etc/absensi/secrets/vault-app-token /etc/absensi/at-rest.json
+sudo chown 65532:65532 /etc/absensi/secrets/oauth-cookie-secret
+# oidc-client-secret dibaca oauth2-proxy (65532) dan keycloak-bootstrap (1000)
+# lewat grup bersama 4000, jadi mode 0640 dengan grup itu — bukan 0600.
+sudo chown 1000:4000 /etc/absensi/secrets/oidc-client-secret
+sudo chmod 0640 /etc/absensi/secrets/oidc-client-secret
+sudo chown 1000:4000 /etc/absensi/secrets/keycloak-db-user /etc/absensi/secrets/keycloak-db-password
+sudo usermod -a -G absensi-secrets postgres 2>/dev/null || true
+sudo chown 1000:1000 /etc/absensi/secrets/keycloak-admin-user /etc/absensi/secrets/keycloak-admin-password
+sudo chmod 0640 /etc/absensi/secrets/keycloak-db-user /etc/absensi/secrets/keycloak-db-password
+sudo chmod 0600 /etc/absensi/secrets/vault-app-token \
+  /etc/absensi/secrets/oauth-cookie-secret /etc/absensi/secrets/keycloak-admin-user \
+  /etc/absensi/secrets/keycloak-admin-password /etc/absensi/at-rest.json
+sudo chmod 0700 /var/lib/absensi /var/backups/absensi
+sudo chown 100:1000 /etc/absensi/tls/vault.key
+sudo chown 1000:1000 /etc/absensi/tls/tls.key
+sudo chmod 0600 /etc/absensi/tls/vault.key /etc/absensi/tls/tls.key
+```
+
+Jalankan blok ini **sebelum** `docker compose up`. Verifikasi dengan `stat -c '%u %g %a %n' /etc/absensi/secrets/*`; UID harus cocok dengan tabel, bukan `0`.
+
 Salin sertifikat, key, CA, dan attestation ke path dalam `deployment.env`; mode private key dan attestation `0600`. Ganti `ABSENSI_BIND_ADDRESS` dengan alamat VPN/LAN server. Verifikasi tidak ada route publik/NAT ke port 443.
 
 Buat secret secara interaktif tanpa argumen command-line:
@@ -57,13 +96,41 @@ sudo sh -c 'umask 077; openssl rand -base64 32 > /etc/absensi/secrets/oauth-cook
 
 ## Validasi dan bootstrap Vault
 
+### Prasyarat host: swap (batas keamanan mlock)
+
+`disable_mlock = true` pada `deploy/vault.hcl` adalah kompromi eksplisit: Vault
+berjalan `read_only` dengan `cap_drop: [ALL]`, sehingga memori yang memuat kunci
+unseal **dapat ter-swap ke disk**. Host wajib memenuhi salah satu opsi:
+
+```bash
+# Opsi A — swap dimatikan (disarankan)
+sudo swapoff -a
+swapon --show   # harus kosong
+
+# Opsi B — swap terenkripsi
+lsblk -o NAME,TYPE,MOUNTPOINT,FSTYPE | grep -i crypt
+```
+
+Verifikasi perilaku setelah stack jalan — `enabled: false` adalah hasil yang
+diharapkan dari konfigurasi ini, bukan kegagalan:
+
+```bash
+docker compose -f deploy/compose.yaml logs vault | grep -i mlock
+# Mlock: supported: true, enabled: false
+```
+
+
 ```bash
 set -a; . /etc/absensi/deployment.env; set +a
 docker compose -f deploy/compose.yaml config -q
 docker compose -f deploy/compose.yaml up -d vault
 ```
 
-Vault sengaja mulai sealed. Inisialisasi sekali melalui shell lokal server, simpan unseal/recovery material pada media owner terpisah dan terenkripsi. Jangan masukkan ke repo/chat. Unseal melalui proses dual-control owner. Aktifkan KV v2 `secret/`, pasang `deploy/vault-app-policy.hcl`, lalu buat token service ber-TTL dengan `no_default_policy` dan policy tersebut saja. Tulis token ke `/etc/absensi/secrets/vault-app-token` mode `0600`. Rotasi token melalui maintenance terjadwal dan restart aplikasi; paket belum memiliki agent auto-renew.
+Vault sengaja mulai sealed. Container berjalan sebagai uid `100` gid `1000` (akun `vault` bawaan image) dengan `SKIP_CHOWN=true` dan `SKIP_SETCAP=true`, sehingga `read_only: true` dan `cap_drop: [ALL]` tetap berlaku.
+
+**Batas keamanan mlock:** `vault.hcl` memakai `disable_mlock = true`, jadi memori Vault dapat ter-swap ke disk. Ini konsekuensi menjalankan container tanpa `IPC_LOCK`/`setcap`. Kompensasi wajib di server kantor: matikan swap (`swapoff -a` + hapus entri `fstab`) atau tempatkan swap pada partisi terenkripsi LUKS2. Verifikasi dengan `swapon --show` (kosong) atau `lsblk -o NAME,TYPE,FSTYPE` yang menunjukkan swap di atas `crypt`. Jangan nyatakan mlock aktif.
+
+Inisialisasi sekali melalui shell lokal server, simpan unseal/recovery material pada media owner terpisah dan terenkripsi. Jangan masukkan ke repo/chat. Unseal melalui proses dual-control owner. Aktifkan KV v2 `secret/`, pasang `deploy/vault-app-policy.hcl`, lalu buat token service ber-TTL dengan `no_default_policy` dan policy tersebut saja. Tulis token ke `/etc/absensi/secrets/vault-app-token` mode `0600`. Rotasi token melalui maintenance terjadwal dan restart aplikasi; paket belum memiliki agent auto-renew.
 
 Owner memasukkan nilai RTSP tanpa membuatnya muncul sebagai argumen, history, atau output:
 
@@ -78,7 +145,17 @@ Gunakan terminal lokal server yang tidak direkam. Perintah contoh kedua perlu di
 
 ## Bootstrap Keycloak
 
-Naikkan database dan Keycloak. Login melalui URL HTTPS internal. Buat realm `absensi`, client API audience `absensi-api`, confidential client `absensi-dashboard`, redirect URI `https://<hostname>/oauth2/callback`, PKCE S256, serta role `operator`, `reviewer`, `admin`. Nonaktifkan direct access grant. Tambahkan protocol mapper yang memasukkan claim konstan `absensi.principal_type=user` pada access token dashboard, claim audience `absensi-api`, scope `dashboard:read`, dan realm roles. Untuk client kamera/ingest terpisah, mapper menetapkan `absensi.principal_type=machine`; jangan berikan role dashboard. Salin client secret langsung ke `/etc/absensi/secrets/oidc-client-secret` mode `0600`; jangan kirim ke chat.
+Realm diprovision otomatis oleh service `keycloak-bootstrap` (`deploy/keycloak-realm-bootstrap.sh`), idempoten dan dijalankan sekali setiap `up`:
+
+```bash
+docker compose -f deploy/compose.yaml up -d --wait
+docker compose -f deploy/compose.yaml logs keycloak-bootstrap | tail -3
+# realm_bootstrap=ok
+```
+
+Script membuat realm `absensi`, role `operator`/`reviewer`/`admin`, confidential client `absensi-dashboard` (PKCE S256, redirect `https://<hostname>/oauth2/callback`, direct access grant mati), mapper audience `absensi-api`, dan mapper claim `absensi.principal_type=user`. Semua kredensial dibaca dari file secret; tidak ada nilai yang muncul di argumen, log, atau `docker compose config`.
+
+Yang masih manual di server: client kamera/ingest terpisah dengan `absensi.principal_type=machine` tanpa role dashboard, penetapan role ke user nyata, serta penonaktifan bootstrap admin setelah admin bernama dan recovery admin diuji.
 
 Setelah instance aktif, tetapkan secara aktual:
 
@@ -92,11 +169,20 @@ Hapus/nonaktifkan bootstrap admin setelah admin bernama dan recovery admin diuji
 
 ```bash
 set -a; . /etc/absensi/deployment.env; set +a
-docker compose -f deploy/compose.yaml build --pull app
-docker compose -f deploy/compose.yaml up -d
+docker compose -f deploy/compose.yaml build --pull app keycloak keycloak-bootstrap
+docker compose -f deploy/compose.yaml up -d --wait   # harus exit 0
 docker compose -f deploy/compose.yaml ps
 curl --fail --cacert /etc/absensi/tls/ca.crt https://$ABSENSI_HOSTNAME/health/live
 curl --fail --cacert /etc/absensi/tls/ca.crt https://$ABSENSI_HOSTNAME/health/ready
+```
+
+Urutan start yang benar: `vault` naik lebih dulu dan **harus di-unseal** sebelum `app`, karena `app` membaca RTSP/manifest key saat startup dan akan restart-loop bila Vault masih sealed.
+
+Verifikasi end-to-end (OIDC, RBAC, persistence, backup/restore) memakai probe yang sama dengan yang dijalankan di runner:
+
+```bash
+bash deploy/synthetic-e2e-probe.sh /etc/absensi
+# probe_pass=13 probe_fail=0
 ```
 
 Buka `https://<hostname>/dashboard`; redirect harus menuju login Keycloak. Uji terpisah role operator/reviewer/admin. `docker compose ... config` tidak boleh menampilkan nilai secret. Log aplikasi hanya boleh memuat field allowlist non-PII; audit tidak menyimpan token, RTSP, media, atau template biometrik.

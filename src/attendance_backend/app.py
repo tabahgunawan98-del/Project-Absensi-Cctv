@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 import uuid
@@ -42,7 +43,14 @@ class App:
         self.auth_config = auth_config
         self.limits = limits or __import__('attendance_backend.limits', fromlist=['Limits']).Limits()
         self.clock = clock or __import__('time').time
-        self.schema = json.loads((Path(__file__).parents[2] / "contract" / "event.schema.json").read_text())
+        # Installed packages don't keep the repo layout, so allow an explicit
+        # path; the repo-relative default still works for tests and dev.
+        schema_path = Path(
+            os.environ.get(
+                "ABSENSI_CONTRACT_DIR", Path(__file__).parents[2] / "contract"
+            )
+        ) / "event.schema.json"
+        self.schema = json.loads(schema_path.read_text())
         self.validator = Draft202012Validator(self.schema)
         self._closed = False
         self._schema_ready = True

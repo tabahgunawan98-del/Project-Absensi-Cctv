@@ -3,6 +3,7 @@ name = "attendance-cctv-backend"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+  "cryptography>=43,<47",
   "jsonschema>=4.23,<5",
   "rfc8785>=0.1.4,<0.2",
 ]

@@ -1,9 +1,11 @@
 """JWT verification for the ingress boundary.
 
 Authorization is derived only from verified token claims; request bodies never
-grant authority. ponytail: HS256 with locally configured shared keys only —
-owner IdP, JWKS rotation, RS256/EdDSA, and revocation stay blocked until the
-owner picks an identity provider; add them in `_verify_signature` / key lookup.
+grant authority. Two modes are supported: a JWKS-backed asymmetric mode
+(`key_resolver`) for a real IdP, and the legacy HS256 shared-secret mode
+(`keys`) retained for the phase 1-3 tests. In asymmetric mode symmetric
+algorithms are refused outright, so a JWKS public key can never be replayed as
+an HMAC secret.
 """
 
 import base64
@@ -13,6 +15,15 @@ import hmac
 import json
 import time
 from dataclasses import dataclass, field
+
+from cryptography.exceptions import InvalidSignature
+
+from .jwks import (
+    ASYMMETRIC_ALGORITHMS,
+    JwksUnavailable,
+    UnsupportedKey,
+    verify_asymmetric_signature,
+)
 
 # grant_type decides the principal kind: client-credentials tokens can never be
 # users, so a service token cannot reach user-delegated endpoints.
@@ -30,12 +41,17 @@ class TokenError(Exception):
 class AuthConfig:
     issuer: str
     audience: str
-    keys: dict  # kid -> shared secret (bytes)
+    keys: dict  # kid -> shared secret (bytes); legacy HS256 mode only
     algorithms: frozenset = frozenset({"HS256"})
     clock_skew_seconds: int = 60  # provisional default; owner policy pending
     scope_claim: str = "scope"
     event_types_claim: str = "absensi.event_types"  # provisional claim name
     sites_claim: str = "absensi.sites"  # provisional claim name
+    key_resolver: object = None  # JwksCache-like: .resolve(kid) -> (public_key, alg)
+
+    @property
+    def asymmetric_mode(self):
+        return self.key_resolver is not None
 
 
 @dataclass(frozen=True)
@@ -79,6 +95,49 @@ def _seconds(value):
     return float(value)
 
 
+def _verify_signature(parts, header, config):
+    """Verify the JWT signature in whichever mode the config selects."""
+    alg = header.get("alg")
+    if not isinstance(alg, str) or alg not in config.algorithms:
+        raise TokenError("token_invalid", "Token algorithm is not allowed")
+    # "none" can never be in an allowlist, but refuse it explicitly as well.
+    if alg.lower() == "none":
+        raise TokenError("token_invalid", "Unsecured tokens are not accepted")
+
+    signing_input = f"{parts[0]}.{parts[1]}".encode()
+    signature = _decode(parts[2])
+
+    if config.asymmetric_mode:
+        if alg not in ASYMMETRIC_ALGORITHMS:
+            raise TokenError(
+                "token_invalid", "Symmetric algorithms are not accepted in JWKS mode"
+            )
+        kid = header.get("kid")
+        if not isinstance(kid, str) or not kid:
+            raise TokenError("token_invalid", "Token has no key id")
+        try:
+            public_key, declared_alg = config.key_resolver.resolve(kid)
+        except (JwksUnavailable, UnsupportedKey) as error:
+            # Fail closed: an unreachable or unusable JWKS never grants access.
+            raise TokenError("token_invalid", "Token key could not be verified") from error
+        if isinstance(declared_alg, str) and declared_alg != alg:
+            raise TokenError("token_invalid", "Token algorithm does not match its key")
+        try:
+            verify_asymmetric_signature(alg, public_key, signing_input, signature)
+        except (InvalidSignature, UnsupportedKey) as error:
+            raise TokenError("token_invalid", "Token signature mismatch") from error
+        return
+
+    if not alg.startswith("HS"):
+        raise TokenError("token_invalid", "Token algorithm is not allowed")
+    secret = config.keys.get(header.get("kid"))
+    if secret is None:
+        raise TokenError("token_invalid", "Token key id is unknown")
+    expected = hmac.new(secret, signing_input, hashlib.sha256).digest()
+    if not hmac.compare_digest(expected, signature):
+        raise TokenError("token_invalid", "Token signature mismatch")
+
+
 def verify_token(token, config, now=None):
     """Return a Principal built exclusively from verified claims."""
     now = time.time() if now is None else now
@@ -87,14 +146,7 @@ def verify_token(token, config, now=None):
         raise TokenError("token_invalid", "Token must have three segments")
 
     header = _decode_json(parts[0])
-    if header.get("alg") not in config.algorithms:
-        raise TokenError("token_invalid", "Token algorithm is not allowed")
-    secret = config.keys.get(header.get("kid"))
-    if secret is None:
-        raise TokenError("token_invalid", "Token key id is unknown")
-    expected = hmac.new(secret, f"{parts[0]}.{parts[1]}".encode(), hashlib.sha256).digest()
-    if not hmac.compare_digest(expected, _decode(parts[2])):
-        raise TokenError("token_invalid", "Token signature mismatch")
+    _verify_signature(parts, header, config)
 
     claims = _decode_json(parts[1])
     if claims.get("iss") != config.issuer:

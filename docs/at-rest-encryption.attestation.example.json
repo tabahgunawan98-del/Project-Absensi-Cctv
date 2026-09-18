@@ -1,0 +1,9 @@
+{
+  "_comment": "Template. The real attestation is signed off by the owner and expires. This file proves nothing on its own: SecurityPolicy only checks that an unexpired, owner-attested statement exists, because the runtime cannot measure LUKS/KMS from inside the process.",
+  "encrypted_at_rest": true,
+  "mechanism": "luks2",
+  "device": "/dev/mapper/absensi-data",
+  "attested_by": "REPLACE-WITH-OWNER-REPRESENTATIVE",
+  "attested_at": "2026-01-01T00:00:00Z",
+  "expires_at": "2027-01-01T00:00:00Z"
+}

@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://absensi-cctv.invalid/contracts/ingress-event-2.0.schema.json",
+  "title": "Absensi CCTV ingress event contract 2.0",
+  "description": "Breaking successor to 1.0. Schema-valid does not imply authorized or semantically admissible: runtime MUST also enforce the cross-field invariants listed in README, which JSON Schema 2020-12 cannot express.",
+  "oneOf": [
+    { "$ref": "#/$defs/ObservationEvent" },
+    { "$ref": "#/$defs/IdentityResolutionEvent" },
+    { "$ref": "#/$defs/ManualAttendanceEvent" }
+  ],
+  "$defs": {
+    "Uuid": {
+      "type": "string",
+      "description": "Lowercase canonical UUID; pattern-enforced so validity does not depend on an environment format checker.",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "UtcTimestamp": {
+      "type": "string",
+      "description": "RFC3339 UTC only, with optional fractional seconds limited to 1–6 digits (microsecond precision). Month/day ranges are enforced by pattern; 29 February in a non-leap year is rejected by the portable calendar invariant, not by pattern.",
+      "pattern": "^(?:19|20)[0-9]{2}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-9]))T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{1,6})?Z$"
+    },
+    "SourceSession": {
+      "type": "object",
+      "required": ["instance_id", "boot_id", "version"],
+      "properties": {
+        "instance_id": { "$ref": "#/$defs/Uuid" },
+        "boot_id": { "$ref": "#/$defs/Uuid" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 64 }
+      },
+      "additionalProperties": false
+    },
+    "MachineEnvelope": {
+      "type": "object",
+      "required": ["schema_version", "canonicalization", "event_id", "event_type", "occurred_at", "source", "site_id", "payload"],
+      "properties": {
+        "schema_version": { "const": "2.0" },
+        "canonicalization": { "const": "jcs-rfc8785-v1" },
+        "event_id": { "$ref": "#/$defs/Uuid" },
+        "event_type": { "type": "string" },
+        "occurred_at": { "$ref": "#/$defs/UtcTimestamp" },
+        "source": { "$ref": "#/$defs/SourceSession" },
+        "site_id": { "$ref": "#/$defs/Uuid" },
+        "correlation_id": { "$ref": "#/$defs/Uuid" },
+        "payload": { "type": "object" }
+      }
+    },
+    "UserEnvelope": {
+      "type": "object",
+      "required": ["schema_version", "canonicalization", "event_id", "event_type", "occurred_at", "site_id", "payload"],
+      "properties": {
+        "schema_version": { "const": "2.0" },
+        "canonicalization": { "const": "jcs-rfc8785-v1" },
+        "event_id": { "$ref": "#/$defs/Uuid" },
+        "event_type": { "type": "string" },
+        "occurred_at": { "$ref": "#/$defs/UtcTimestamp" },
+        "site_id": { "$ref": "#/$defs/Uuid" },
+        "correlation_id": { "$ref": "#/$defs/Uuid" },
+        "payload": { "type": "object" }
+      }
+    },
+    "ObservationQualityFlag": {
+      "enum": ["blurred", "low_light", "occluded", "pose_out_of_range", "multiple_subjects", "direction_uncertain"]
+    },
+    "IdentityQualityFlag": {
+      "enum": ["blurred", "low_light", "occluded", "pose_out_of_range", "multiple_subjects", "spoof_suspected", "credential_unreadable"]
+    },
+    "ObservationPipeline": {
+      "type": "object",
+      "required": ["detector_version", "tracker_version", "zone_config_version", "crossing_policy_version"],
+      "properties": {
+        "detector_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "tracker_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "zone_config_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "crossing_policy_version": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "additionalProperties": false
+    },
+    "ZoneTransition": {
+      "type": "object",
+      "description": "from_zone_id MUST differ from to_zone_id; enforced by the portable invariant checker, not by JSON Schema.",
+      "required": ["from_zone_id", "to_zone_id", "crossing_line_id", "route_group_id", "direction"],
+      "properties": {
+        "from_zone_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "to_zone_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "crossing_line_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "route_group_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "direction": { "enum": ["entry", "exit", "unknown"] }
+      },
+      "additionalProperties": false
+    },
+    "ObservationPayload": {
+      "type": "object",
+      "required": ["observation_id", "camera_id", "stream_id", "sequence", "track_id", "pipeline", "zone_transition", "quality_flags", "media_ref_id"],
+      "properties": {
+        "observation_id": { "$ref": "#/$defs/Uuid" },
+        "camera_id": { "$ref": "#/$defs/Uuid" },
+        "stream_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "track_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "pipeline": { "$ref": "#/$defs/ObservationPipeline" },
+        "zone_transition": { "$ref": "#/$defs/ZoneTransition" },
+        "quality_flags": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ObservationQualityFlag" },
+          "uniqueItems": true
+        },
+        "media_ref_id": {
+          "oneOf": [{ "$ref": "#/$defs/Uuid" }, { "type": "null" }],
+          "description": "Opaque backend identifier; never a URI, path, credential, or object key."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["zone_transition"],
+            "properties": { "zone_transition": { "required": ["direction"], "properties": { "direction": { "const": "unknown" } } } }
+          },
+          "then": {
+            "properties": { "quality_flags": { "contains": { "const": "direction_uncertain" } } }
+          },
+          "else": {
+            "properties": { "quality_flags": { "not": { "contains": { "const": "direction_uncertain" } } } }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "ObservationEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/MachineEnvelope" },
+        { "properties": { "event_type": { "const": "observation.detected.v2" }, "payload": { "$ref": "#/$defs/ObservationPayload" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "IdentityResolutionPayload": {
+      "type": "object",
+      "required": ["observation_id", "resolution_id", "revision", "supersedes_resolution_id", "resolution", "employee_id", "method", "score", "score_metric", "score_policy_version", "model_version", "quality_flags", "review_reason"],
+      "properties": {
+        "observation_id": { "$ref": "#/$defs/Uuid" },
+        "resolution_id": { "$ref": "#/$defs/Uuid" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "supersedes_resolution_id": { "oneOf": [{ "$ref": "#/$defs/Uuid" }, { "type": "null" }] },
+        "resolution": { "enum": ["matched", "unknown", "review_required"] },
+        "employee_id": { "oneOf": [{ "$ref": "#/$defs/Uuid" }, { "type": "null" }] },
+        "method": { "enum": ["face", "badge", "qr", "manual_review"] },
+        "score": { "oneOf": [{ "type": "number" }, { "type": "null" }] },
+        "score_metric": {
+          "oneOf": [
+            { "enum": ["cosine_similarity", "inner_product", "euclidean_distance", "calibrated_probability"] },
+            { "type": "null" }
+          ]
+        },
+        "score_policy_version": {
+          "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 128 }, { "type": "null" }],
+          "description": "Registry key binding score metric, transform/calibration, match threshold, review band, and model version."
+        },
+        "model_version": { "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 128 }, { "type": "null" }] },
+        "quality_flags": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/IdentityQualityFlag" },
+          "uniqueItems": true
+        },
+        "review_reason": {
+          "oneOf": [
+            { "enum": ["below_threshold", "ambiguous_candidates", "quality_gate_failed", "spoof_suspected", "credential_unreadable", "identity_conflict", "operator_requested"] },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["resolution"], "properties": { "resolution": { "const": "matched" } } },
+          "then": { "properties": { "employee_id": { "$ref": "#/$defs/Uuid" }, "review_reason": { "type": "null" } } },
+          "else": { "properties": { "employee_id": { "type": "null" }, "review_reason": { "type": "string" } } }
+        },
+        {
+          "if": {
+            "required": ["quality_flags"],
+            "properties": { "quality_flags": { "contains": { "enum": ["spoof_suspected", "credential_unreadable"] } } }
+          },
+          "then": { "properties": { "resolution": { "enum": ["unknown", "review_required"] } } }
+        },
+        {
+          "if": { "required": ["method"], "properties": { "method": { "const": "face" } } },
+          "then": {
+            "required": ["score", "score_metric", "score_policy_version", "model_version"],
+            "properties": {
+              "score": { "type": "number" },
+              "score_metric": { "enum": ["cosine_similarity", "inner_product", "euclidean_distance", "calibrated_probability"] },
+              "score_policy_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "model_version": { "type": "string", "minLength": 1, "maxLength": 128 }
+            }
+          },
+          "else": {
+            "properties": {
+              "score": { "type": "null" },
+              "score_metric": { "type": "null" },
+              "model_version": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": { "required": ["score_metric"], "properties": { "score_metric": { "const": "calibrated_probability" } } },
+          "then": { "properties": { "score": { "type": "number", "minimum": 0, "maximum": 1 } } }
+        },
+        {
+          "if": { "required": ["method"], "properties": { "method": { "const": "manual_review" } } },
+          "then": { "properties": { "resolution": { "enum": ["matched", "review_required"] } } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "IdentityResolutionEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/MachineEnvelope" },
+        { "properties": { "event_type": { "const": "identity.resolved.v2" }, "payload": { "$ref": "#/$defs/IdentityResolutionPayload" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ManualAttendancePayload": {
+      "type": "object",
+      "required": ["employee_id", "kind", "effective_at", "reason", "shift_instance_id"],
+      "properties": {
+        "employee_id": { "$ref": "#/$defs/Uuid" },
+        "kind": { "enum": ["check_in", "check_out"] },
+        "effective_at": { "$ref": "#/$defs/UtcTimestamp" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "shift_instance_id": { "oneOf": [{ "$ref": "#/$defs/Uuid" }, { "type": "null" }] }
+      },
+      "additionalProperties": false
+    },
+    "ManualAttendanceEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/UserEnvelope" },
+        { "properties": { "event_type": { "const": "attendance.manual.v2" }, "payload": { "$ref": "#/$defs/ManualAttendancePayload" } } }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

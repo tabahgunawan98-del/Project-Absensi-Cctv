@@ -8,7 +8,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from attendance_backend.auth import AuthConfig
+from attendance_backend.auth import AuthConfig, TokenError, verify_token
 from attendance_backend.jwks import JwksCache, jwk_from_public_key, sign_jwt
 from attendance_backend.recovery import BackupService, RestoreAuthorization
 from attendance_backend.runtime import RuntimeService
@@ -86,6 +86,27 @@ class RuntimeConfigTest(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ConfigError):
                 RuntimeConfig.from_environment(required | change)
 
+    def test_numeric_overrides_reject_values_above_the_sane_upper_bound(self):
+        required = self.valid_environment()
+        limits = {
+            "ABSENSI_DEDUPE_WINDOW_SECONDS": 3_600,
+            "ABSENSI_RAW_RETENTION_DAYS": 3_650,
+            "ABSENSI_PROCESSED_RETENTION_DAYS": 3_650,
+            "ABSENSI_RATE_LIMIT_PER_MINUTE": 100_000,
+            "ABSENSI_CLOCK_SKEW_SECONDS": 300,
+            "ABSENSI_GRACE_PERIOD_MINUTES": 720,
+        }
+        for name, maximum in limits.items():
+            companion = {}
+            if name == "ABSENSI_RAW_RETENTION_DAYS":
+                companion = {"ABSENSI_PROCESSED_RETENTION_DAYS": str(maximum)}
+            with self.subTest(name=name, bound="at maximum"):
+                accepted = RuntimeConfig.from_environment(required | companion | {name: str(maximum)})
+                self.assertEqual(getattr(accepted, name.removeprefix("ABSENSI_").lower()), maximum)
+            for rejected in (maximum + 1, 10**20):
+                with self.subTest(name=name, value=rejected), self.assertRaises(ConfigError):
+                    RuntimeConfig.from_environment(required | companion | {name: str(rejected)})
+
     def test_config_repr_and_dict_do_not_contain_secret_values(self):
         config = RuntimeConfig.from_environment(self.valid_environment())
         text = repr(config) + json.dumps(config.safe_summary(), sort_keys=True)
@@ -100,7 +121,7 @@ class ComposeSecurityTest(unittest.TestCase):
         cls.compose = (ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8")
 
     def test_only_reverse_proxy_publishes_a_port_and_defaults_loopback(self):
-        self.assertIn('${ABSENSI_BIND_ADDRESS:-127.0.0.1}:443:443', self.compose)
+        self.assertIn('${ABSENSI_BIND_ADDRESS:-127.0.0.1}:${ABSENSI_HTTPS_PORT:-443}:443', self.compose)
         for service in ("app", "keycloak", "vault", "keycloak-db"):
             block = self.compose.split(f"  {service}:", 1)[1].split("\n  ", 1)[0]
             self.assertNotIn("ports:", block)
@@ -123,12 +144,97 @@ class ComposeSecurityTest(unittest.TestCase):
         self.assertNotIn("rtsp://", self.compose.lower())
 
     def test_images_are_version_pinned_and_proxy_forces_tls(self):
+        pinned = self.compose + (ROOT / "deploy" / "keycloak.Dockerfile").read_text(encoding="utf-8")
         for image in ("keycloak:26.3.3", "vault:1.20.3", "caddy:2.10.2", "postgres:17.6"):
-            self.assertIn(image, self.compose)
+            self.assertIn(image, pinned)
         caddy = (ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")
         self.assertIn("tls /run/tls/tls.crt /run/tls/tls.key", caddy)
         self.assertIn("header_up X-Forwarded-Proto https", caddy)
         self.assertNotIn("http://{$ABSENSI_HOSTNAME}", caddy)
+
+    def service_block(self, service):
+        return self.compose.split(f"\n  {service}:", 1)[1].split("\n\n", 1)[0]
+
+    def test_every_service_runs_as_an_explicit_non_root_uid(self):
+        for service in ("proxy", "oauth2-proxy", "app", "keycloak", "keycloak-db", "vault"):
+            block = self.service_block(service)
+            with self.subTest(service=service):
+                self.assertRegex(block, r"user: \"[1-9][0-9]*:[0-9]+\"")
+
+    def test_vault_keeps_hardening_and_declares_its_mlock_posture(self):
+        block = self.service_block("vault")
+        self.assertIn("read_only: true", block)
+        self.assertIn("cap_drop: [ALL]", block)
+        self.assertIn("SKIP_SETCAP", block)
+        self.assertIn("SKIP_CHOWN", block)
+        vault_config = (ROOT / "deploy" / "vault.hcl").read_text(encoding="utf-8")
+        self.assertIn("disable_mlock = true", vault_config)
+        runbook = (ROOT / "docs" / "office-deployment-runbook.md").read_text(encoding="utf-8")
+        self.assertIn("mlock", runbook)
+
+    def test_keycloak_is_prebuilt_optimized_and_needs_no_writable_build_dir(self):
+        block = self.service_block("keycloak")
+        self.assertIn("keycloak.Dockerfile", block)
+        self.assertIn("read_only: true", block)
+        entrypoint = (ROOT / "deploy" / "keycloak-entrypoint.sh").read_text(encoding="utf-8")
+        self.assertIn("--optimized", entrypoint)
+        dockerfile = (ROOT / "deploy" / "keycloak.Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("kc.sh build", dockerfile)
+
+    def test_healthchecks_validate_the_internal_certificate_chain(self):
+        self.assertNotIn("--no-check-certificate", self.compose)
+        self.assertNotIn("-k ", self.compose)
+        self.assertNotIn("--insecure", self.compose)
+
+    def test_runbook_documents_per_service_ownership_of_secret_files(self):
+        runbook = (ROOT / "docs" / "office-deployment-runbook.md").read_text(encoding="utf-8")
+        for marker in ("chown", "at-rest.json", "65532", "1000", "100:1000"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, runbook)
+
+    def test_vault_keeps_hardening_and_declares_the_mlock_limit(self):
+        vault = self.service_block("vault")
+        self.assertIn("read_only: true", vault)
+        self.assertIn("cap_drop: [ALL]", vault)
+        # The image entrypoint appends its own -config; passing the file too
+        # loads the listener twice and fails to bind.
+        self.assertIn("command: [server]", vault)
+        self.assertNotIn("-config=/vault/config/vault.hcl", vault)
+        hcl = (ROOT / "deploy" / "vault.hcl").read_text(encoding="utf-8")
+        self.assertIn("disable_mlock = true", hcl)
+        self.assertIn("SECURITY LIMIT", hcl)
+        runbook = (ROOT / "docs" / "office-deployment-runbook.md").read_text(encoding="utf-8")
+        self.assertIn("mlock", runbook)
+
+    def test_keycloak_image_is_built_optimized_ahead_of_start(self):
+        dockerfile = (ROOT / "deploy" / "keycloak.Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("kc.sh build", dockerfile)
+        entrypoint = (ROOT / "deploy" / "keycloak-entrypoint.sh").read_text(encoding="utf-8")
+        self.assertIn("--optimized", entrypoint)
+        # A secret file without a trailing newline makes `read` return non-zero;
+        # under `set -e` that silently killed the entrypoint.
+        self.assertIn("|| true", entrypoint)
+
+    def test_proxy_keeps_the_capability_its_binary_requires(self):
+        proxy = self.service_block("proxy")
+        self.assertIn("cap_drop: [ALL]", proxy)
+        self.assertIn("cap_add: [NET_BIND_SERVICE]", proxy)
+
+    def test_no_healthcheck_skips_certificate_verification(self):
+        for name in ("compose.yaml", "Caddyfile"):
+            text = (ROOT / "deploy" / name).read_text(encoding="utf-8")
+            for bypass in ("--no-check-certificate", "tls_skip_verify", "--insecure"):
+                self.assertNotIn(bypass, text)
+
+    def test_realm_bootstrap_is_provisioned_and_reads_secrets_from_files(self):
+        script = (ROOT / "deploy" / "keycloak-realm-bootstrap.sh").read_text(encoding="utf-8")
+        for path in ("/run/secrets/keycloak_admin_password", "/run/secrets/oidc_client_secret"):
+            self.assertIn(path, script)
+        self.assertIn("absensi-dashboard", script)
+        self.assertIn("absensi.principal_type", script)
+        compose_bootstrap = self.service_block("keycloak-bootstrap")
+        self.assertIn("service_completed_successfully", self.compose)
+        self.assertIn("read_only: true", compose_bootstrap)
 
     def test_vault_application_policy_is_read_only_and_narrow(self):
         policy = (ROOT / "deploy" / "vault-app-policy.hcl").read_text(encoding="utf-8")
@@ -232,6 +338,65 @@ class RuntimeHttpAppTest(unittest.TestCase):
 
 
 class SyntheticEndToEndSmokeTest(unittest.TestCase):
+    def test_verify_token_handles_nested_absensi_claims_with_strict_typing(self):
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        jwks = {"keys": [jwk_from_public_key(private_key.public_key(), kid="smoke-key")]}
+        auth = AuthConfig(
+            issuer="https://absensi.office.local/realms/absensi",
+            audience="absensi-api",
+            keys={},
+            algorithms=frozenset({"RS256"}),
+            key_resolver=JwksCache(lambda: jwks, ttl_seconds=300, clock=lambda: 1_000),
+        )
+
+        # Case 1: Nested claims (preferred Keycloak 26 output)
+        nested_claims = {
+            "iss": auth.issuer,
+            "aud": auth.audience,
+            "exp": 2_000,
+            "sub": "user-1",
+            "absensi": {
+                "principal_type": "user",
+                "event_types": ["observation.detected.v2"],
+                "sites": ["site-1"],
+            },
+            "realm_access": {"roles": ["operator"]},
+        }
+        token = sign_jwt(nested_claims, private_key, kid="smoke-key", alg="RS256")
+        principal = verify_token(token, auth, now=1_000)
+        self.assertEqual(principal.principal_type, "user")
+        self.assertIn("observation.detected.v2", principal.event_types)
+        self.assertIn("site-1", principal.sites)
+
+        # Case 2: Legacy flat dotted claims
+        flat_claims = {
+            "iss": auth.issuer,
+            "aud": auth.audience,
+            "exp": 2_000,
+            "sub": "user-1",
+            "absensi.principal_type": "user",
+            "absensi.event_types": ["observation.detected.v2"],
+            "absensi.sites": ["site-1"],
+            "realm_access": {"roles": ["operator"]},
+        }
+        token = sign_jwt(flat_claims, private_key, kid="smoke-key", alg="RS256")
+        principal = verify_token(token, auth, now=1_000)
+        self.assertEqual(principal.principal_type, "user")
+
+        # Case 3: Conflicting claims
+        conflict = nested_claims.copy()
+        conflict["absensi.principal_type"] = "machine"
+        token = sign_jwt(conflict, private_key, kid="smoke-key", alg="RS256")
+        with self.assertRaisesRegex(TokenError, "Conflicting values"):
+            verify_token(token, auth, now=1_000)
+
+        # Case 4: Strict typing violation (machine expects string, sites expect list)
+        bad_type = nested_claims.copy()
+        bad_type["absensi"] = {"principal_type": ["not-a-string"]}
+        token = sign_jwt(bad_type, private_key, kid="smoke-key", alg="RS256")
+        with self.assertRaisesRegex(TokenError, "must be str"):
+            verify_token(token, auth, now=1_000)
+
     def test_oidc_ingest_attendance_dashboard_backup_restore(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -9,6 +9,18 @@ class ConfigError(ValueError):
     pass
 
 
+# Upper bounds keep an operator typo from disabling a control: a huge clock skew
+# would neutralise `exp`/`nbf`, and a huge rate limit would disable throttling.
+MAXIMUMS = {
+    "ABSENSI_DEDUPE_WINDOW_SECONDS": 3_600,
+    "ABSENSI_RAW_RETENTION_DAYS": 3_650,
+    "ABSENSI_PROCESSED_RETENTION_DAYS": 3_650,
+    "ABSENSI_RATE_LIMIT_PER_MINUTE": 100_000,
+    "ABSENSI_CLOCK_SKEW_SECONDS": 300,
+    "ABSENSI_GRACE_PERIOD_MINUTES": 720,
+}
+
+
 def _required(environment, name):
     value = environment.get(name, "").strip()
     if not value:
@@ -16,7 +28,7 @@ def _required(environment, name):
     return value
 
 
-def _positive(environment, name, default):
+def _bounded(environment, name, default, maximum):
     raw = environment.get(name, str(default))
     try:
         value = int(raw)
@@ -24,6 +36,8 @@ def _positive(environment, name, default):
         raise ConfigError(f"{name} must be an integer") from error
     if value <= 0:
         raise ConfigError(f"{name} must be positive")
+    if value > maximum:
+        raise ConfigError(f"{name} must not exceed {maximum}")
     return value
 
 
@@ -58,8 +72,10 @@ class RuntimeConfig:
         manifest_key_path = _required(environment, "ABSENSI_MANIFEST_KEY_PATH")
         if "://" in rtsp_secret_path or "://" in manifest_key_path:
             raise ConfigError("secret configuration must name a Vault path, not contain a secret")
-        raw_days = _positive(environment, "ABSENSI_RAW_RETENTION_DAYS", 30)
-        processed_days = _positive(environment, "ABSENSI_PROCESSED_RETENTION_DAYS", 90)
+        raw_days = _bounded(environment, "ABSENSI_RAW_RETENTION_DAYS", 30, MAXIMUMS["ABSENSI_RAW_RETENTION_DAYS"])
+        processed_days = _bounded(
+            environment, "ABSENSI_PROCESSED_RETENTION_DAYS", 90, MAXIMUMS["ABSENSI_PROCESSED_RETENTION_DAYS"]
+        )
         if processed_days < raw_days:
             raise ConfigError("processed retention must not be shorter than raw retention")
         return cls(
@@ -72,12 +88,20 @@ class RuntimeConfig:
             jwks_uri=jwks_uri,
             rtsp_secret_path=rtsp_secret_path,
             manifest_key_path=manifest_key_path,
-            dedupe_window_seconds=_positive(environment, "ABSENSI_DEDUPE_WINDOW_SECONDS", 10),
+            dedupe_window_seconds=_bounded(
+                environment, "ABSENSI_DEDUPE_WINDOW_SECONDS", 10, MAXIMUMS["ABSENSI_DEDUPE_WINDOW_SECONDS"]
+            ),
             raw_retention_days=raw_days,
             processed_retention_days=processed_days,
-            rate_limit_per_minute=_positive(environment, "ABSENSI_RATE_LIMIT_PER_MINUTE", 100),
-            clock_skew_seconds=_positive(environment, "ABSENSI_CLOCK_SKEW_SECONDS", 30),
-            grace_period_minutes=_positive(environment, "ABSENSI_GRACE_PERIOD_MINUTES", 15),
+            rate_limit_per_minute=_bounded(
+                environment, "ABSENSI_RATE_LIMIT_PER_MINUTE", 100, MAXIMUMS["ABSENSI_RATE_LIMIT_PER_MINUTE"]
+            ),
+            clock_skew_seconds=_bounded(
+                environment, "ABSENSI_CLOCK_SKEW_SECONDS", 30, MAXIMUMS["ABSENSI_CLOCK_SKEW_SECONDS"]
+            ),
+            grace_period_minutes=_bounded(
+                environment, "ABSENSI_GRACE_PERIOD_MINUTES", 15, MAXIMUMS["ABSENSI_GRACE_PERIOD_MINUTES"]
+            ),
         )
 
     def safe_summary(self):

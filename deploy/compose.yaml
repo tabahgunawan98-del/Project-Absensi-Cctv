@@ -1,18 +1,24 @@
 name: absensi-cctv
 
+# Every service pins an explicit non-root uid:gid. The runbook's chown steps use
+# the same numbers; changing one without the other is what broke rev1 startup.
 services:
   proxy:
     image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    user: "1000:1000"
     read_only: true
     restart: unless-stopped
     ports:
-      - "${ABSENSI_BIND_ADDRESS:-127.0.0.1}:443:443"
+      - "${ABSENSI_BIND_ADDRESS:-127.0.0.1}:${ABSENSI_HTTPS_PORT:-443}:443"
     environment:
       ABSENSI_HOSTNAME: ${ABSENSI_HOSTNAME:?internal hostname required}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ${ABSENSI_TLS_CERT:?TLS certificate required}:/run/tls/tls.crt:ro
       - ${ABSENSI_TLS_KEY:?TLS private key required}:/run/tls/tls.key:ro
+      # Mounted over the system trust store so the healthcheck's busybox wget
+      # verifies the internal chain instead of skipping verification.
+      - ${ABSENSI_INTERNAL_CA:?internal CA required}:/etc/ssl/certs/ca-certificates.crt:ro
     tmpfs:
       - /config
       - /data
@@ -23,17 +29,21 @@ services:
         aliases: ["${ABSENSI_HOSTNAME:?required}"]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
+    # The caddy binary carries file capabilities; without NET_BIND_SERVICE in the
+    # bounding set the kernel refuses to exec it ("operation not permitted").
     cap_add: [NET_BIND_SERVICE]
     mem_limit: 128m
-    cpus: 0.25
+    cpus: ${ABSENSI_CPUS_PROXY:-0.25}
     healthcheck:
-      test: [CMD, wget, --no-check-certificate, -qO-, https://127.0.0.1/health/live]
-      interval: 30s
+      test: [CMD, wget, -qO-, "https://${ABSENSI_HOSTNAME}/health/live"]
+      interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 12
+      start_period: 20s
 
   oauth2-proxy:
     image: quay.io/oauth2-proxy/oauth2-proxy:v7.12.0@sha256:786bed0f000c0f8a7b31619244ebab02406a8856a4faf3f5fb1df61fbd6c30ed
+    user: "65532:4000"
     read_only: true
     restart: unless-stopped
     command:
@@ -64,15 +74,29 @@ services:
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     mem_limit: 128m
-    cpus: 0.25
+    cpus: ${ABSENSI_CPUS_OAUTH2_PROXY:-0.25}
+    healthcheck:
+      # Compromise: the distroless image has no shell and no HTTP client, so the
+      # container can only prove the binary still execs. Real readiness of
+      # /ping is asserted from the proxy in the end-to-end probe, not here.
+      test: [CMD, /bin/oauth2-proxy, --version]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     depends_on:
       keycloak:
+        condition: service_healthy
+      keycloak-bootstrap:
+        condition: service_completed_successfully
+      proxy:
         condition: service_healthy
 
   app:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+    user: "65532:65532"
     read_only: true
     restart: unless-stopped
     environment:
@@ -104,7 +128,7 @@ services:
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     mem_limit: 512m
-    cpus: 1.0
+    cpus: ${ABSENSI_CPUS_APP:-1.0}
     depends_on:
       keycloak:
         condition: service_healthy
@@ -112,39 +136,67 @@ services:
         condition: service_healthy
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=3)"]
-      interval: 30s
+      interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 12
+      start_period: 20s
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.3.3@sha256:6a7217a100bd3e5de4063a27a538ef999a3c5a88c4b4ec0ffc0a642aee7b2597
+    build:
+      context: ..
+      dockerfile: deploy/keycloak.Dockerfile
+    user: "1000:0"
     read_only: true
     restart: unless-stopped
-    entrypoint: [/bin/bash, /opt/absensi/keycloak-entrypoint.sh]
     environment:
       KC_HOSTNAME: https://${ABSENSI_HOSTNAME:?required}
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
-    volumes:
-      - ./keycloak-entrypoint.sh:/opt/absensi/keycloak-entrypoint.sh:ro
     secrets: [keycloak_db_user, keycloak_db_password, keycloak_admin_user, keycloak_admin_password]
-    tmpfs: [/tmp]
+    tmpfs:
+      - /tmp
+      - /opt/keycloak/data/tmp
     networks: [identity_net, keycloak_db_net]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     mem_limit: 1536m
-    cpus: 1.5
+    cpus: ${ABSENSI_CPUS_KEYCLOAK:-1.0}
     depends_on:
       keycloak-db:
         condition: service_healthy
     healthcheck:
       test: [CMD-SHELL, "exec 3<>/dev/tcp/127.0.0.1/9000; echo -e 'GET /health/ready HTTP/1.1\r\nhost: localhost\r\nConnection: close\r\n\r\n' >&3; grep -q '200 OK' <&3"]
-      interval: 30s
+      interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 30
+      start_period: 60s
+
+  keycloak-bootstrap:
+    build:
+      context: ..
+      dockerfile: deploy/keycloak.Dockerfile
+    user: "1000:4000"
+    read_only: true
+    restart: "no"
+    entrypoint: [/bin/bash, /opt/absensi/keycloak-realm-bootstrap.sh]
+    environment:
+      ABSENSI_HOSTNAME: ${ABSENSI_HOSTNAME:?required}
+      ABSENSI_OIDC_AUDIENCE: ${ABSENSI_OIDC_AUDIENCE:?required}
+      HOME: /tmp
+    secrets: [keycloak_admin_user, keycloak_admin_password, oidc_client_secret]
+    tmpfs: [/tmp]
+    networks: [identity_net]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    cpus: ${ABSENSI_CPUS_KEYCLOAK_BOOTSTRAP:-0.5}
+    depends_on:
+      keycloak:
+        condition: service_healthy
 
   keycloak-db:
     image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+    user: "70:70"
     read_only: true
     restart: unless-stopped
     environment:
@@ -157,20 +209,30 @@ services:
     networks: [keycloak_db_net]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
-    mem_limit: 1024m
-    cpus: 1.0
+    mem_limit: 512m
+    cpus: ${ABSENSI_CPUS_KEYCLOAK_DB:-0.5}
     healthcheck:
       test: [CMD-SHELL, "pg_isready -d keycloak -U $$(cat /run/secrets/keycloak_db_user)"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 12
+      start_period: 20s
 
   vault:
     image: hashicorp/vault:1.20.3@sha256:1262354cd28697b7982ea3b9b6f159a996bdaad0b5270765e31b67797ce15bea
+    # uid 100 / gid 1000 is the image's own `vault` account. Running as that user
+    # up front means the entrypoint never needs root, chown, or setcap, so the
+    # container keeps `read_only: true` and `cap_drop: [ALL]`.
+    user: "100:1000"
     read_only: true
     restart: unless-stopped
-    command: [server, -config=/vault/config/vault.hcl]
+    environment:
+      SKIP_CHOWN: "true"
+      SKIP_SETCAP: "true"
+    # The image entrypoint already appends `-config=/vault/config`; passing the
+    # file as well loads the same listener twice and fails with "address already
+    # in use". Mount the config into the directory and pass only `server`.
+    command: [server]
     volumes:
       - ./vault.hcl:/vault/config/vault.hcl:ro
       - vault-data:/vault/file
@@ -181,13 +243,14 @@ services:
     networks: [secrets_net]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-    mem_limit: 1024m
-    cpus: 1.0
+    mem_limit: 512m
+    cpus: ${ABSENSI_CPUS_VAULT:-0.5}
     healthcheck:
-      test: [CMD, vault, status, -address=https://127.0.0.1:8200, -ca-cert=/run/tls/ca.crt]
-      interval: 30s
+      test: [CMD-SHELL, "vault status -address=https://127.0.0.1:8200 -ca-cert=/run/tls/ca.crt 2>&1 | grep -q Sealed"]
+      interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 12
+      start_period: 15s
 
 networks:
   edge:

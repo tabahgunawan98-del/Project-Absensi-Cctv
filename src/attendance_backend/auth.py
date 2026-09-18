@@ -90,6 +90,32 @@ def _string_set(value):
     return frozenset()
 
 
+def _get_absensi_claim(claims, key, expected_type):
+    """Retrieve a claim from the nested `absensi` object or flat `absensi.key` format.
+
+    Representing custom claims in a namespace is standard for many IdPs, while
+    the dotted flat keys were used in early prototypes. This parser accepts both
+    but rejects tokens where they conflict.
+    """
+    absensi = claims.get("absensi")
+    val_nested = None
+    if isinstance(absensi, dict):
+        val_nested = absensi.get(key)
+
+    val_flat = claims.get(f"absensi.{key}")
+
+    if val_nested is not None and val_flat is not None and val_nested != val_flat:
+        raise TokenError("token_invalid", f"Conflicting values for absensi.{key}")
+
+    val = val_nested if val_nested is not None else val_flat
+
+    if val is not None and not isinstance(val, expected_type):
+        # Strict typing prevents coercion bugs in the security boundary.
+        raise TokenError("token_invalid", f"Claim absensi.{key} must be {expected_type.__name__}")
+
+    return val
+
+
 def _seconds(value):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -164,7 +190,7 @@ def verify_token(token, config, now=None):
     if not_before is not None and now + config.clock_skew_seconds < not_before:
         raise TokenError("token_invalid", "Token is not valid yet")
 
-    principal_type = claims.get("absensi.principal_type")
+    principal_type = _get_absensi_claim(claims, "principal_type", str)
     if principal_type not in {"machine", "user"}:
         grant_type = claims.get("grant_type")
         principal_type = GRANT_PRINCIPAL_TYPES.get(grant_type) if isinstance(grant_type, str) else None
@@ -182,7 +208,7 @@ def verify_token(token, config, now=None):
         subject=subject,
         client_id=client_id,
         scopes=_string_set(claims.get(config.scope_claim)),
-        event_types=_string_set(claims.get(config.event_types_claim)),
-        sites=_string_set(claims.get(config.sites_claim)),
+        event_types=_string_set(_get_absensi_claim(claims, "event_types", list)),
+        sites=_string_set(_get_absensi_claim(claims, "sites", list)),
         roles=roles,
     )

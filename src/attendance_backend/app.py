@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 import uuid
@@ -42,7 +43,14 @@ class App:
         self.auth_config = auth_config
         self.limits = limits or __import__('attendance_backend.limits', fromlist=['Limits']).Limits()
         self.clock = clock or __import__('time').time
-        self.schema = json.loads((Path(__file__).parents[2] / "contract" / "event.schema.json").read_text())
+        # Installed packages don't keep the repo layout, so allow an explicit
+        # path; the repo-relative default still works for tests and dev.
+        schema_path = Path(
+            os.environ.get(
+                "ABSENSI_CONTRACT_DIR", Path(__file__).parents[2] / "contract"
+            )
+        ) / "event.schema.json"
+        self.schema = json.loads(schema_path.read_text())
         self.validator = Draft202012Validator(self.schema)
         self._closed = False
         self._schema_ready = True
@@ -224,6 +232,7 @@ class App:
             scopes: frozenset
             event_types: frozenset
             sites: frozenset
+            roles: frozenset = frozenset()
 
         return LegacyPrincipal(
             principal_type=principal.get("principal_type"),
@@ -232,12 +241,13 @@ class App:
             scopes=frozenset(principal.get("scopes", [])),
             event_types=frozenset(principal.get("event_types", [])),
             sites=frozenset(principal.get("sites", [])),
+            roles=frozenset(principal.get("roles", [])),
         )
 
     def _require_base_authorization(self, principal, principal_type, scope):
         if principal.principal_type != principal_type:
             raise RequestError(403, "principal_event_denied", "Principal type denied")
-        if scope not in principal.scopes:
+        if scope not in principal.scopes and scope not in principal.roles:
             raise RequestError(403, "scope_denied", "Scope denied")
         if principal_type == "user" and not principal.subject:
             raise RequestError(401, "token_invalid", "Human subject required")

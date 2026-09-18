@@ -14,6 +14,12 @@ https://{$ABSENSI_HOSTNAME} {
 		Content-Security-Policy "default-src 'self'; frame-ancestors 'none'; form-action 'self'"
 	}
 
+	# Proxy-local liveness: proves TLS and the certificate chain without
+	# depending on an upstream that may still be starting.
+	handle /health/live {
+		respond "proxy-live" 200
+	}
+
 	@keycloak path /realms/* /resources/* /admin/*
 	handle @keycloak {
 		reverse_proxy keycloak:8080 {

@@ -88,6 +88,8 @@ Jalankan blok ini **sebelum** `docker compose up`. Verifikasi dengan `stat -c '%
 
 Salin sertifikat, key, CA, dan attestation ke path dalam `deployment.env`; mode private key dan attestation `0600`. Ganti `ABSENSI_BIND_ADDRESS` dengan alamat VPN/LAN server. Verifikasi tidak ada route publik/NAT ke port 443.
 
+**Attestation at-rest** (`/etc/absensi/at-rest.json`) harus persis mengikuti skema `docs/at-rest-encryption.attestation.example.json` — field di **root**: `encrypted_at_rest`, `mechanism`, `attested_by`, `attested_at`, `expires_at`. Field lama (`storage_encrypted`/`method`/`attestor`/`expires`, dibungkus `encryption_at_rest{}`) membuat `app` menolak start dengan `SecurityPolicyError: at-rest encryption attestation does not confirm encryption`. Lebih penting: attestation hanya sah bila storage **benar-benar** terenkripsi (LUKS2); `app` berjalan `read_only` dan tidak bisa mengukur LUKS dari dalam, jadi ia bergantung pada kejujuran attestation. Jangan menulis attestation `LUKS2` untuk disk yang tidak terenkripsi — itu melewati gate dengan pernyataan palsu. Keputusan enkripsi adalah milik owner (lihat `docs/vault-init-owner-instructions.md` §0b); belum ada jalur opt-out yang terimplementasi.
+
 Buat secret secara interaktif tanpa argumen command-line:
 
 ```bash

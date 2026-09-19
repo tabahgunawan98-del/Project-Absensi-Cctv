@@ -4,13 +4,18 @@ Dokumen ini untuk **owner**, dieksekusi di **console lokal server** (Proxmox she
 atau SSH langsung), bukan oleh agent. Agent tidak boleh memegang unseal key,
 recovery share, atau root token.
 
+> Dokumen ini juga memuat **gate enkripsi at-rest** (§0b) — keputusan owner yang
+> memblokir `app`, terpisah dari Vault. Jangan lewati; `app` menolak start tanpa
+> salah satu jalur di §0b.
+
 Prasyarat yang sudah selesai (diverifikasi agent 2026-09-19):
 
 - `proxy`, `keycloak-db`, `keycloak`, `keycloak-bootstrap` (exit 0), `oauth2-proxy`, `vault` — semua healthy.
 - Ownership secret sudah cocok dengan `compose.yaml` (file DB `70:4000 0640`,
   Keycloak masuk lewat `group_add: ["4000"]`); cek ulang:
   `bash /root/deploy/check-secret-ownership.sh /etc/absensi` → `ownership_check=ok`.
-- **Belum selesai:** swap masih aktif (lihat §0). Selesaikan §0 **sebelum** §1.
+- **Belum selesai:** swap masih aktif (lihat §0a), storage belum terenkripsi
+  (lihat §0b). Keduanya harus beres **sebelum** init.
 
 Seluruh perintah `vault` di bawah dijalankan di dalam container dengan CA internal:
 
@@ -20,7 +25,7 @@ kvt() { docker exec -e VAULT_CACERT=/run/tls/ca.crt -e VAULT_TOKEN="$VAULT_TOKEN
 kv status    # Initialized=false Sealed=true
 ```
 
-### 0. Gate keamanan: swap (WAJIB sebelum init)
+### 0a. Gate keamanan: swap (WAJIB sebelum init)
 
 `vault.hcl` memakai `disable_mlock = true`, jadi memori yang memuat unseal key
 **dapat ditulis ke swap dalam bentuk plaintext**. Swap host saat ini:
@@ -52,6 +57,33 @@ lsblk -o NAME,TYPE,FSTYPE | grep -i crypt    # harus tampil
 ```
 
 Lampirkan output `swapon --show` (kosong) atau `lsblk | grep crypt` sebagai bukti.
+
+### 0b. Gate keamanan: enkripsi at-rest (WAJIB sebelum init — memblokir `app`)
+
+`app` menolak start dengan
+`SecurityPolicyError: at-rest encryption attestation does not confirm encryption`
+bila tidak ada attestation valid. Saat ini `/etc/absensi/at-rest.json` **palsu**:
+memakai field yang salah (`encryption_at_rest{...}` vs `encrypted_at_rest`/
+`mechanism`/`attested_by`/`expires_at` di root — lihat
+`docs/at-rest-encryption.attestation.example.json`) **dan** mengklaim `LUKS2`
+padahal host tidak punya layer `crypt` sama sekali (`lsblk -o NAME,TYPE,FSTYPE`
+→ kosong). Gate bekerja sesuai desain — jangan "perbaiki" nama field selagi
+storage belum terenkripsi. Dua jalur yang sah, keduanya keputusan owner:
+
+**Jalur A — enkripsi nyata (disarankan):** pindahkan volume data aplikasi ke
+LUKS2, lalu tulis attestation yang jujur persis mengikuti template. Ini satu paket
+dengan keputusan swap §0a: jalur LUKS2 di sana bisa dipakai untuk storage juga.
+
+**Jalur B — opt-out tertulis untuk pilot data sintetis:** hanya sah selama sistem
+berisi data sintetis. Saat ini **belum ada implementasinya** —
+`require_encryption_at_rest` belum terikat env var/komposisi (QA, komentar
+2026-09-19). Sampai
+Backend menambahkan `ABSENSI_REQUIRE_ENCRYPTION_AT_REST` (default `true`) dan
+jalur itu tercatat eksplisit di `describe()`/health, jalur B tidak bisa
+dieksekusi; satu-satunya cara teknis adalah Jalur A. Jangan tulis attestation
+palsu apa pun sebagai gantinya.
+
+Tanpa salah satu jalur, `app` tidak akan start — dan itu benar.
 
 ### 1. Init — dual-control, dua orang hadir
 

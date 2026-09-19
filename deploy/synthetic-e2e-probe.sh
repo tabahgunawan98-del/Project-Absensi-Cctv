@@ -6,7 +6,10 @@ set -uo pipefail
 
 ROOT="${1:-/tmp/absensi-stack}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-C="docker compose -f deploy/compose.yaml"
+# Path absolut ke compose: probe ikut dipanggil dari cwd mana pun (lihat
+# pemakaian di office runbook). Relatif dulu memicu
+# `compose file "deploy/compose.yaml" is invalid` bila dijalankan dari luar repo.
+C="docker compose -f $REPO/deploy/compose.yaml"
 PASS=0
 FAIL=0
 
@@ -47,11 +50,11 @@ if $C run --rm --no-deps \
   -e OIDC_CLIENT_SECRET_FILE=/run/probe/oidc-client-secret \
   -e PYTHONPATH=/app/src:/app/tests \
   --entrypoint python \
-  app -m unittest test_integration_keycloak -v > /tmp/integration-test.log 2>&1; then
+  app -m unittest test_integration_keycloak -v > "$ROOT/integration-test.log" 2>&1; then
   printf 'ok\n'; PASS=$((PASS + 1))
 else
   printf 'FAILED\n'; FAIL=$((FAIL + 1))
-  cat /tmp/integration-test.log
+  cat "$ROOT/integration-test.log"
 fi
 rm -f "$PROBE_SECRET"
 

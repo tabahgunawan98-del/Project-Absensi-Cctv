@@ -10,6 +10,12 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # pemakaian di office runbook). Relatif dulu memicu
 # `compose file "deploy/compose.yaml" is invalid` bila dijalankan dari luar repo.
 C="docker compose -f $REPO/deploy/compose.yaml"
+# Compose interpolation butuh env deployment (mis. ABSENSI_HOSTNAME); source
+# dari ROOT bila probe dijalankan di host stack (/etc/absensi) supaya satu
+# baris yang terdokumentasi di runbook bekerja tanpa manual export.
+if [[ -f "$ROOT/deployment.env" ]]; then
+  set -a; . "$ROOT/deployment.env"; set +a
+fi
 PASS=0
 FAIL=0
 

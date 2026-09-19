@@ -75,13 +75,23 @@ LUKS2, lalu tulis attestation yang jujur persis mengikuti template. Ini satu pak
 dengan keputusan swap §0a: jalur LUKS2 di sana bisa dipakai untuk storage juga.
 
 **Jalur B — opt-out tertulis untuk pilot data sintetis:** hanya sah selama sistem
-berisi data sintetis. Saat ini **belum ada implementasinya** —
-`require_encryption_at_rest` belum terikat env var/komposisi (QA, komentar
-2026-09-19). Sampai
-Backend menambahkan `ABSENSI_REQUIRE_ENCRYPTION_AT_REST` (default `true`) dan
-jalur itu tercatat eksplisit di `describe()`/health, jalur B tidak bisa
-dieksekusi; satu-satunya cara teknis adalah Jalur A. Jangan tulis attestation
-palsu apa pun sebagai gantinya.
+berisi data sintetis. Tambahkan `ABSENSI_REQUIRE_ENCRYPTION_AT_REST=false` ke
+`/etc/absensi/deployment.env`, lalu `docker compose up -d --wait app`. Perilaku
+kontrolnya fail-closed: default `true` bila variabel tidak ada, hanya nilai
+eksplisit `false`/`0`/`no`/`off` yang membuka jalur ini, dan typo (`falsse`)
+ditolak dengan `ConfigError` saat startup sehingga kontrol tidak mati diam-diam.
+Statusnya wajib terlihat di `/health/ready`:
+
+```bash
+docker exec absensi-cctv-app-1 python3 -c \
+  "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/health/ready').read().decode())"
+# {"status":"ready","policy":{"require_tls":true,"require_encryption_at_rest":false,"attested":false}}
+```
+
+`require_encryption_at_rest: false` di output itu adalah catatan terbuka bahwa
+enkripsi belum aktif dan risikonya diterima — bukan kontrol yang seolah menyala.
+Jangan tulis attestation palsu sebagai gantinya. Sebelum data karyawan nyata
+masuk, kembalikan ke Jalur A.
 
 Tanpa salah satu jalur, `app` tidak akan start — dan itu benar.
 

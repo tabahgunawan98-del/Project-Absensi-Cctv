@@ -41,6 +41,20 @@ def _bounded(environment, name, default, maximum):
     return value
 
 
+def _bool_flag(environment, name, default=True):
+    """Parse an explicit boolean override. Anything but an exact true/false
+    value is rejected so a typo cannot silently disable a control."""
+    raw = environment.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return True
+    if normalized in ("0", "false", "no", "off"):
+        return False
+    raise ConfigError(f"{name} must be a boolean (true/false)")
+
+
 @dataclass(frozen=True)
 class RuntimeConfig:
     hostname: str
@@ -58,6 +72,7 @@ class RuntimeConfig:
     rate_limit_per_minute: int = 100
     clock_skew_seconds: int = 30
     grace_period_minutes: int = 15
+    require_encryption_at_rest: bool = True
 
     @classmethod
     def from_environment(cls, environment):
@@ -101,6 +116,9 @@ class RuntimeConfig:
             ),
             grace_period_minutes=_bounded(
                 environment, "ABSENSI_GRACE_PERIOD_MINUTES", 15, MAXIMUMS["ABSENSI_GRACE_PERIOD_MINUTES"]
+            ),
+            require_encryption_at_rest=_bool_flag(
+                environment, "ABSENSI_REQUIRE_ENCRYPTION_AT_REST", True
             ),
         )
 

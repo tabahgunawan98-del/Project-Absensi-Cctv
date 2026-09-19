@@ -21,7 +21,7 @@ class RuntimeService:
         limits = None
         if config is not None:
             limits = Limits(max_requests_per_window=config.rate_limit_per_minute)
-        self.app = App(database_path, auth_config=auth_config, clock=clock, limits=limits)
+        self.app = App(database_path, auth_config=auth_config, clock=clock, limits=limits, config=config)
         self.attendance = AttendanceEngine(
             database_path,
             AttendanceConfig(

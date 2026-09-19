@@ -14,6 +14,7 @@ import rfc8785
 from jsonschema import Draft202012Validator
 
 from .invariants import InvariantError, check_invariants, parse_strict_json
+from .security_policy import SecurityPolicy
 
 MACHINE_PATHS = {"/v2/events", "/v2/machine-events"}
 BATCH_PATHS = {"/v2/events/batch", "/v2/machine-event-batches"}
@@ -38,11 +39,12 @@ class RequestError(Exception):
 
 
 class App:
-    def __init__(self, database_path, auth_config=None, limits=None, clock=None):
+    def __init__(self, database_path, auth_config=None, limits=None, clock=None, config=None):
         self.database_path = str(database_path)
         self.auth_config = auth_config
         self.limits = limits or __import__('attendance_backend.limits', fromlist=['Limits']).Limits()
         self.clock = clock or __import__('time').time
+        self.config = config
         # Installed packages don't keep the repo layout, so allow an explicit
         # path; the repo-relative default still works for tests and dev.
         schema_path = Path(
@@ -368,14 +370,30 @@ class App:
     def _ready(self):
         if self._closed or not self._schema_ready:
             return Response(503, {"status": "not_ready"})
+
+        policy_info = None
+        if self.config is not None:
+            policy = SecurityPolicy(
+                attestation_path=self.config.encryption_attestation,
+                require_encryption_at_rest=self.config.require_encryption_at_rest,
+            )
+            policy_info = policy.describe()
+
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 connection.execute("SELECT 1")
                 connection.rollback()
         except sqlite3.Error:
-            return Response(503, {"status": "not_ready"})
-        return Response(200, {"status": "ready"})
+            res: dict = {"status": "not_ready"}
+            if policy_info is not None:
+                res["policy"] = policy_info
+            return Response(503, res)
+
+        res = {"status": "ready"}
+        if policy_info is not None:
+            res["policy"] = policy_info
+        return Response(200, res)
 
     @staticmethod
     def _problem_body(error):

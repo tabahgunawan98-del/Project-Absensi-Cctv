@@ -71,7 +71,10 @@ def _fetch_json(url, ca_file):
 
 def build_service(environment=os.environ):
     config = RuntimeConfig.from_environment(environment)
-    SecurityPolicy(attestation_path=config.encryption_attestation).verify_storage(
+    SecurityPolicy(
+        attestation_path=config.encryption_attestation,
+        require_encryption_at_rest=config.require_encryption_at_rest,
+    ).verify_storage(
         config.database_path.parent, config.backup_path
     )
     vault_token_file = environment.get("VAULT_TOKEN_FILE", "/run/secrets/vault_app_token")

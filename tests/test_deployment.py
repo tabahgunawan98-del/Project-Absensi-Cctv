@@ -65,6 +65,46 @@ class RuntimeConfigTest(unittest.TestCase):
             (20, 14, 60, 80, 10, 5),
         )
 
+    def test_at_rest_encryption_requirement_defaults_to_true_and_opting_out_is_explicit(self):
+        required = self.valid_environment()
+
+        self.assertIs(RuntimeConfig.from_environment(required).require_encryption_at_rest, True)
+
+        for value in ("false", "FALSE", "0", "no", "off"):
+            with self.subTest(value=value):
+                config = RuntimeConfig.from_environment(
+                    required | {"ABSENSI_REQUIRE_ENCRYPTION_AT_REST": value}
+                )
+                self.assertIs(config.require_encryption_at_rest, False)
+
+        for value in ("true", "TRUE", "1", "yes", "on"):
+            with self.subTest(value=value):
+                config = RuntimeConfig.from_environment(
+                    required | {"ABSENSI_REQUIRE_ENCRYPTION_AT_REST": value}
+                )
+                self.assertIs(config.require_encryption_at_rest, True)
+
+        # A typo, an empty value, or an unset var must never be read as
+        # "disabled" — they fail closed or keep the default instead.
+        for typo in ("", "   ", "falsee", "disable", "tru", "2", "null"):
+            with self.subTest(typo=typo), self.assertRaises(ConfigError):
+                RuntimeConfig.from_environment(
+                    required | {"ABSENSI_REQUIRE_ENCRYPTION_AT_REST": typo}
+                )
+
+    def test_at_rest_opt_out_is_visible_in_the_health_output(self):
+        from attendance_backend.security_policy import SecurityPolicy
+
+        enforced = SecurityPolicy(attestation_path=None).describe()
+        self.assertIs(enforced["require_encryption_at_rest"], True)
+        self.assertIs(enforced["attested"], False)
+
+        opted_out = SecurityPolicy(
+            attestation_path=None, require_encryption_at_rest=False
+        ).describe()
+        self.assertIs(opted_out["require_encryption_at_rest"], False)
+        self.assertIs(opted_out["attested"], False)
+
     def test_missing_or_unsafe_configuration_fails_closed(self):
         required = self.valid_environment()
         for name in required:

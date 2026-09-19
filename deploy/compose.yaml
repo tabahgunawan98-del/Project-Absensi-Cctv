@@ -146,6 +146,12 @@ services:
       context: ..
       dockerfile: deploy/keycloak.Dockerfile
     user: "1000:0"
+    # The DB secrets are owned by postgres (uid 70) so keycloak-db reads them as
+    # owner. Keycloak is uid 1000 and would only get the "other" bits, which
+    # mode 0640 denies -- that is the `Permission denied` crash loop. Joining the
+    # shared secrets group (gid 4000) grants it the group bits without moving
+    # either service off its own uid and without any chown on the host.
+    group_add: ["4000"]
     read_only: true
     restart: unless-stopped
     environment:

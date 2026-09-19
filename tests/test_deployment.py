@@ -192,6 +192,39 @@ class ComposeSecurityTest(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, runbook)
 
+    def test_db_secret_is_readable_by_both_postgres_and_keycloak(self):
+        """The DB secret files are read by two services running as different uids.
+
+        keycloak-db is uid 70 and reads them as owner; keycloak is uid 1000 and
+        can only reach them through the shared group. With mode 0640 exactly one
+        ownership works for both: owner 70, group 4000, plus `group_add` on
+        keycloak. Chowning the files to 1000:4000 instead -- what the runbook used
+        to say -- starves postgres, so assert the whole contract, not one half.
+        """
+        keycloak = self.service_block("keycloak")
+        self.assertIn('user: "1000:0"', keycloak)
+        # Host-side `usermod -a -G` does not affect in-container identity, so the
+        # group membership has to be declared here.
+        self.assertIn('group_add: ["4000"]', keycloak)
+        self.assertIn('user: "70:70"', self.service_block("keycloak-db"))
+
+        runbook = (ROOT / "docs" / "office-deployment-runbook.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "sudo chown 70:4000 /etc/absensi/secrets/keycloak-db-user "
+            "/etc/absensi/secrets/keycloak-db-password",
+            runbook,
+        )
+        self.assertIn(
+            "sudo chmod 0640 /etc/absensi/secrets/keycloak-db-user "
+            "/etc/absensi/secrets/keycloak-db-password",
+            runbook,
+        )
+        # The instruction that caused the host drift must not come back.
+        self.assertNotIn(
+            "chown 1000:4000 /etc/absensi/secrets/keycloak-db-user", runbook
+        )
+        self.assertNotIn("usermod -a -G absensi-secrets postgres", runbook)
+
     def test_vault_keeps_hardening_and_declares_the_mlock_limit(self):
         vault = self.service_block("vault")
         self.assertIn("read_only: true", vault)

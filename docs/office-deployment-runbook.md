@@ -45,14 +45,22 @@ Docker secret file diberikan ke container apa adanya; tanpa ownership yang cocok
 | Service | `user:` | File yang harus dimiliki |
 |---|---|---|
 | `app` | `65532:65532` | `/etc/absensi/secrets/vault-app-token`, `/etc/absensi/at-rest.json`, `/var/lib/absensi`, `/var/backups/absensi` |
-| `keycloak` | `1000:0` | `keycloak-db-user`, `keycloak-db-password`, `keycloak-admin-user`, `keycloak-admin-password` |
-| `keycloak-db` | `70:70` | `keycloak-db-user`, `keycloak-db-password` |
+| `keycloak` | `1000:0` + `group_add: ["4000"]` | `keycloak-db-user`, `keycloak-db-password` (lewat grup `4000`); `keycloak-admin-user`, `keycloak-admin-password` (sebagai owner `1000`) |
+| `keycloak-db` | `70:70` | `keycloak-db-user`, `keycloak-db-password` (sebagai owner `70`) |
 | `oauth2-proxy` | `65532:4000` | `oidc-client-secret` (grup `4000`), `oauth-cookie-secret` |
 | `keycloak-bootstrap` | `1000:4000` | `keycloak-admin-user`, `keycloak-admin-password`, `oidc-client-secret` |
 | `vault` | `100:1000` | volume `vault-data`, TLS key Vault |
 | `proxy` | `1000:1000` | TLS key proxy |
 
-Secret DB dibaca dua service dengan UID berbeda, jadi berikan group bersama dan mode `0640`:
+Secret DB dibaca dua service dengan UID berbeda (`keycloak-db` uid `70`, `keycloak`
+uid `1000`), jadi file dimiliki `70:4000` mode `0640`: Postgres membaca sebagai
+**owner**, Keycloak sebagai **anggota grup** lewat `group_add: ["4000"]` pada
+`deploy/compose.yaml`.
+
+> `usermod -a -G` pada host **tidak** berpengaruh ke UID/GID di dalam container —
+> keanggotaan grup harus dideklarasikan di compose (`group_add`), bukan di host.
+> Jangan `chown 1000:4000` file DB: Postgres akan kehilangan akses (uid 70 bukan
+> owner, gid 70 ≠ 4000) dan `keycloak-db` gagal start.
 
 ```bash
 sudo groupadd -f -g 4000 absensi-secrets
@@ -62,8 +70,9 @@ sudo chown 65532:65532 /etc/absensi/secrets/oauth-cookie-secret
 # lewat grup bersama 4000, jadi mode 0640 dengan grup itu — bukan 0600.
 sudo chown 1000:4000 /etc/absensi/secrets/oidc-client-secret
 sudo chmod 0640 /etc/absensi/secrets/oidc-client-secret
-sudo chown 1000:4000 /etc/absensi/secrets/keycloak-db-user /etc/absensi/secrets/keycloak-db-password
-sudo usermod -a -G absensi-secrets postgres 2>/dev/null || true
+# keycloak-db (uid 70) membaca sebagai owner; keycloak (uid 1000) membaca lewat
+# grup 4000 yang diberikan `group_add` di compose. Jangan chown ke 1000:4000.
+sudo chown 70:4000 /etc/absensi/secrets/keycloak-db-user /etc/absensi/secrets/keycloak-db-password
 sudo chown 1000:1000 /etc/absensi/secrets/keycloak-admin-user /etc/absensi/secrets/keycloak-admin-password
 sudo chmod 0640 /etc/absensi/secrets/keycloak-db-user /etc/absensi/secrets/keycloak-db-password
 sudo chmod 0600 /etc/absensi/secrets/vault-app-token \

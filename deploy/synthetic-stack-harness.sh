@@ -60,8 +60,12 @@ chown 65532:65532 "$ROOT/secrets/vault-app-token" "$ROOT/at-rest.json" \
   "$ROOT/secrets/oauth-cookie-secret"
 chown 65532:65532 "$ROOT/data" "$ROOT/backups"
 chmod 700 "$ROOT/data" "$ROOT/backups"
-chown 1000:4000 "$ROOT/secrets/keycloak-db-user" "$ROOT/secrets/keycloak-db-password"
-chmod 644 "$ROOT/secrets/keycloak-db-user" "$ROOT/secrets/keycloak-db-password"
+# Read by keycloak-db as owner (70) and by keycloak via shared gid 4000
+# (`group_add` in compose). Mode 0640 -- matching production -- not 0644: a
+# world-readable secret let every uid read it and hid the ownership bug that
+# crash-looped the real host.
+chown 70:4000 "$ROOT/secrets/keycloak-db-user" "$ROOT/secrets/keycloak-db-password"
+chmod 640 "$ROOT/secrets/keycloak-db-user" "$ROOT/secrets/keycloak-db-password"
 # Read by keycloak-bootstrap (1000) and oauth2-proxy (65532) via shared gid 4000.
 chown 1000:4000 "$ROOT/secrets/oidc-client-secret"
 chmod 640 "$ROOT/secrets/oidc-client-secret"

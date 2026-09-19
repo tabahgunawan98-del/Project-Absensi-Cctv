@@ -6,6 +6,9 @@ read_secret() {
   [[ -f "$path" ]] || { printf 'required secret file missing\n' >&2; exit 1; }
   # `read` returns non-zero when the file has no trailing newline, which is the
   # normal shape of a docker secret; accept the value it already stored.
+  # Reset first: an unreadable file leaves REPLY unset and `set -u` would report
+  # "REPLY: unbound variable" instead of the real permission error.
+  REPLY=""
   IFS= read -r REPLY < "$path" || true
   [[ -n "$REPLY" ]] || { printf 'required secret file empty\n' >&2; exit 1; }
 }

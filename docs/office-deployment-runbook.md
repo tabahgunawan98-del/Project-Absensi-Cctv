@@ -100,7 +100,14 @@ sudo sh -c 'umask 077; read -rsp "Keycloak bootstrap password: " value; printf "
 Buat cookie secret dengan CSPRNG lokal:
 
 ```bash
-sudo sh -c 'umask 077; openssl rand -base64 32 > /etc/absensi/secrets/oauth-cookie-secret'
+# oauth2-proxy hanya menerima 16/24/32 byte mentah ATAU base64url tanpa padding
+# dari panjang itu, dan menolak trailing newline. `openssl rand -base64 32` (44
+# char base64 standar dengan `+/=`, plus newline) DITOLAK:
+#   cookie_secret from file must be 16, 24, or 32 bytes ... but is 49 bytes
+sudo sh -c 'umask 077; printf "%s" "$(openssl rand -base64 32 | tr "+/" "-_" | tr -d "=")" \
+  > /etc/absensi/secrets/oauth-cookie-secret'
+# verifikasi: tepat 43 byte, tanpa newline
+wc -c < /etc/absensi/secrets/oauth-cookie-secret   # 43
 ```
 
 ## Validasi dan bootstrap Vault

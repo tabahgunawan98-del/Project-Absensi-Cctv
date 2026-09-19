@@ -104,6 +104,10 @@ services:
       ABSENSI_DATABASE_PATH: /var/lib/absensi/attendance.sqlite3
       ABSENSI_BACKUP_PATH: /var/backups/absensi
       ABSENSI_ENCRYPTION_ATTESTATION: /run/absensi/at-rest.json
+      # Fail-closed: absent or unset means the at-rest attestation is required.
+      # Only an explicit false/0/no/off opens the pilot path, and a typo raises
+      # ConfigError at startup rather than silently disabling the control.
+      ABSENSI_REQUIRE_ENCRYPTION_AT_REST: ${ABSENSI_REQUIRE_ENCRYPTION_AT_REST:-true}
       ABSENSI_OIDC_ISSUER: ${ABSENSI_OIDC_ISSUER:?required}
       ABSENSI_OIDC_AUDIENCE: ${ABSENSI_OIDC_AUDIENCE:?required}
       ABSENSI_JWKS_URI: ${ABSENSI_JWKS_URI:?required}

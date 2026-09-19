@@ -167,6 +167,11 @@ class ComposeSecurityTest(unittest.TestCase):
             self.assertNotIn("ports:", block)
         self.assertEqual(self.compose.count("ports:"), 1)
 
+    def test_encryption_optout_flag_reaches_app_environment(self):
+        block = self.service_block("app")
+        self.assertIn("ABSENSI_REQUIRE_ENCRYPTION_AT_REST", block)
+        self.assertIn("${ABSENSI_REQUIRE_ENCRYPTION_AT_REST:-true}", block)
+
     def test_services_are_hardened_and_internal_networks_exist(self):
         for required in (
             "read_only: true",
